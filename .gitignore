@@ -5,3 +5,19 @@ dist/
 !.env.example
 coverage/
 .DS_Store
+
+
+# Instructions locales de Codex
+AGENTS.md
+
+# Variables d'environnement et secrets
+.env
+.env.*
+!.env.example
+
+# Clés privées et identifiants
+*.pem
+*.key
+*.p12
+*.pfx
+credentials.json
