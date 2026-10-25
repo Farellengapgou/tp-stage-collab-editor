@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { test } from "node:test";
-import { buildApp } from "./app.js";
-import { pool } from "./db.js";
-import { hashSessionToken } from "./services/editors.js";
+import { buildApp } from "../../src/app.js";
+import { pool } from "../../src/db.js";
+import { hashSessionToken } from "../../src/services/editors.js";
 
 function sessionCookie(setCookie: string | string[] | undefined): string {
   const value = Array.isArray(setCookie) ? setCookie[0] : setCookie;

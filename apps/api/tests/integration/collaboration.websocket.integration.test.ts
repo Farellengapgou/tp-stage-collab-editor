@@ -4,9 +4,9 @@ import { createRequire } from "node:module";
 import type { AddressInfo } from "node:net";
 import { test } from "node:test";
 import { WebSocket } from "ws";
-import { buildApp } from "./app.js";
-import { pool } from "./db.js";
-import { createSession, findOrCreateEditor } from "./services/editors.js";
+import { buildApp } from "../../src/app.js";
+import { pool } from "../../src/db.js";
+import { createSession, findOrCreateEditor } from "../../src/services/editors.js";
 
 interface ShareDocument {
   data: unknown;

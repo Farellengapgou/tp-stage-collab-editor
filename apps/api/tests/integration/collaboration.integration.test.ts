@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { test } from "node:test";
-import { pool } from "./db.js";
-import { createCollaborationBackend } from "./services/collaboration.js";
+import { pool } from "../../src/db.js";
+import { createCollaborationBackend } from "../../src/services/collaboration.js";
 
 function submit(
   backend: ReturnType<typeof createCollaborationBackend>,

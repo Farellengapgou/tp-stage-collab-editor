@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { buildApp } from "./app.js";
+import { buildApp } from "../../src/app.js";
 
 test("GET /health returns 200", async () => {
   const app = buildApp();
