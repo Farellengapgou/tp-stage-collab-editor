@@ -5,11 +5,32 @@ import { pool } from "../db.js";
 const collectionName = "documents";
 const textType = "text-unicode";
 
+interface DocumentOperation {
+  v: number;
+  src?: string;
+  seq?: number;
+  op?: unknown[];
+  m?: { editorId?: string };
+}
+
+function insertedCodePoints(operation: unknown[]): number {
+  return operation.reduce<number>(
+    (total, component) => total + (typeof component === "string" ? Array.from(component).length : 0),
+    0
+  );
+}
+
+function creditExceededError(): Error {
+  return Object.assign(new Error("Daily Unicode code point credit exhausted."), {
+    code: "CREDIT_EXHAUSTED"
+  });
+}
+
 export class DocumentShareDb extends ShareDB.DB {
   commit(
     collection: string,
     documentId: string,
-    operation: { v: number; op?: unknown[]; m?: { editorId?: string } },
+    operation: DocumentOperation,
     snapshot: { v: number; data: string },
     _options: unknown,
     callback: (error: Error | null, succeeded?: boolean) => void
@@ -20,11 +41,19 @@ export class DocumentShareDb extends ShareDB.DB {
   private async commitDocument(
     collection: string,
     documentId: string,
-    operation: { v: number; op?: unknown[]; m?: { editorId?: string } },
+    operation: DocumentOperation,
     snapshot: { v: number; data: string },
     callback: (error: Error | null, succeeded?: boolean) => void
   ): Promise<void> {
-    if (collection !== collectionName || !operation.op || !operation.m?.editorId) {
+    if (
+      collection !== collectionName ||
+      !operation.op ||
+      !operation.m?.editorId ||
+      !operation.src ||
+      typeof operation.seq !== "number" ||
+      !Number.isInteger(operation.seq) ||
+      operation.seq < 0
+    ) {
       callback(new Error("Invalid document operation."));
       return;
     }
@@ -33,6 +62,7 @@ export class DocumentShareDb extends ShareDB.DB {
 
     try {
       await client.query("BEGIN");
+      const sequence = operation.seq;
       const current = await client.query<{ revision: number }>(
         "SELECT revision FROM document_states WHERE document_id = $1 FOR UPDATE",
         [documentId]
@@ -42,6 +72,28 @@ export class DocumentShareDb extends ShareDB.DB {
         await client.query("ROLLBACK");
         callback(null, false);
         return;
+      }
+
+      const inserted = insertedCodePoints(operation.op);
+      if (inserted > 0) {
+        await client.query(
+          `INSERT INTO daily_credits (editor_id, credit_date)
+           VALUES ($1, (NOW() AT TIME ZONE 'UTC')::date)
+           ON CONFLICT (editor_id, credit_date) DO NOTHING`,
+          [operation.m.editorId]
+        );
+        const debit = await client.query(
+          `UPDATE daily_credits
+           SET used_characters = used_characters + $2
+           WHERE editor_id = $1
+             AND credit_date = (NOW() AT TIME ZONE 'UTC')::date
+             AND used_characters + $2 <= limit_characters
+           RETURNING used_characters`,
+          [operation.m.editorId, inserted]
+        );
+        if (debit.rowCount !== 1) {
+          throw creditExceededError();
+        }
       }
 
       await client.query(
@@ -57,21 +109,28 @@ export class DocumentShareDb extends ShareDB.DB {
       await client.query(
         `INSERT INTO edit_operations (
            id, document_id, editor_id, base_revision, accepted_revision,
-           operation, inserted_code_points
-         ) VALUES ($1, $2, $3, $4, $5, $6, 0)`,
+           operation, inserted_code_points, source, sequence
+         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
         [
           randomUUID(),
           documentId,
           operation.m.editorId,
           operation.v,
           snapshot.v,
-          JSON.stringify(operation.op)
+          JSON.stringify(operation.op),
+          inserted,
+          operation.src,
+          sequence
         ]
       );
       await client.query("COMMIT");
       callback(null, true);
     } catch (error) {
       await client.query("ROLLBACK");
+      if (isUniqueViolation(error)) {
+        callback(null, false);
+        return;
+      }
       callback(error instanceof Error ? error : new Error("Database operation failed."));
     } finally {
       client.release();
@@ -124,8 +183,13 @@ export class DocumentShareDb extends ShareDB.DB {
       }
 
       try {
-        const result = await pool.query<{ accepted_revision: number; operation: unknown }>(
-          `SELECT accepted_revision, operation
+        const result = await pool.query<{
+          accepted_revision: number;
+          operation: unknown;
+          source: string | null;
+          sequence: number | null;
+        }>(
+          `SELECT accepted_revision, operation, source, sequence
            FROM edit_operations
            WHERE document_id = $1
              AND accepted_revision > $2
@@ -135,11 +199,19 @@ export class DocumentShareDb extends ShareDB.DB {
         );
         callback(null, result.rows.map((row) => ({
           v: row.accepted_revision - 1,
-          op: row.operation
+          op: row.operation,
+          m: {},
+          ...(row.source === null || row.sequence === null
+            ? {}
+            : { src: row.source, seq: row.sequence })
         })));
       } catch (error) {
         callback(error instanceof Error ? error : new Error("Database operation failed."));
       }
     })();
   }
+}
+
+function isUniqueViolation(error: unknown): boolean {
+  return typeof error === "object" && error !== null && "code" in error && error.code === "23505";
 }
