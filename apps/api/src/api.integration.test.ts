@@ -11,13 +11,32 @@ function sessionCookie(setCookie: string | string[] | undefined): string {
   return value.split(";")[0];
 }
 
+function assertApiError(response: { statusCode: number; json(): unknown }, statusCode: number): void {
+  assert.equal(response.statusCode, statusCode);
+  const body = response.json() as Record<string, unknown>;
+  assert.deepEqual(Object.keys(body), ["error"]);
+  assert.equal(typeof body.error, "string");
+}
+
 test("editor and document API", async () => {
   const app = buildApp();
   const suffix = randomUUID();
+  let poolEnded = false;
 
   try {
     const health = await app.inject({ method: "GET", url: "/health" });
     assert.equal(health.statusCode, 200);
+
+    const unknownRoute = await app.inject({ method: "GET", url: "/unknown" });
+    assertApiError(unknownRoute, 404);
+
+    const malformedJson = await app.inject({
+      method: "POST",
+      url: "/editors",
+      headers: { "content-type": "application/json" },
+      payload: "{"
+    });
+    assertApiError(malformedJson, 400);
 
     const invalidEditor = await app.inject({
       method: "POST",
@@ -28,7 +47,7 @@ test("editor and document API", async () => {
         is_admin: true
       }
     });
-    assert.equal(invalidEditor.statusCode, 400);
+    assertApiError(invalidEditor, 400);
 
     const firstEditor = await app.inject({
       method: "POST",
@@ -131,7 +150,14 @@ test("editor and document API", async () => {
       url: `/documents/${document.id}`,
       headers: { cookie: bobCookie }
     });
-    assert.equal(deniedDocument.statusCode, 403);
+    assertApiError(deniedDocument, 403);
+
+    const missingDocument = await app.inject({
+      method: "GET",
+      url: `/documents/${randomUUID()}`,
+      headers: { cookie: aliceCookie }
+    });
+    assertApiError(missingDocument, 404);
 
     const deniedInvitation = await app.inject({
       method: "POST",
@@ -139,7 +165,7 @@ test("editor and document API", async () => {
       headers: { cookie: charlieCookie },
       payload: { editorId: bob.id }
     });
-    assert.equal(deniedInvitation.statusCode, 403);
+    assertApiError(deniedInvitation, 403);
 
     const invitation = await app.inject({
       method: "POST",
@@ -163,7 +189,7 @@ test("editor and document API", async () => {
       headers: { cookie: aliceCookie },
       payload: { editorId: bob.id }
     });
-    assert.equal(duplicateInvitation.statusCode, 409);
+    assertApiError(duplicateInvitation, 409);
 
     await pool.query(
       `UPDATE editor_sessions
@@ -177,15 +203,29 @@ test("editor and document API", async () => {
       url: "/editors/me",
       headers: { cookie: aliceCookie }
     });
-    assert.equal(expiredSession.statusCode, 401);
+    assertApiError(expiredSession, 401);
 
     const missingSession = await app.inject({
       method: "GET",
       url: "/documents"
     });
-    assert.equal(missingSession.statusCode, 401);
+    assertApiError(missingSession, 401);
+
+    await pool.end();
+    poolEnded = true;
+    const unexpectedFailure = await app.inject({
+      method: "POST",
+      url: "/editors",
+      payload: {
+        displayName: "Unavailable database",
+        email: `unavailable-${suffix}@example.test`
+      }
+    });
+    assertApiError(unexpectedFailure, 500);
   } finally {
     await app.close();
-    await pool.end();
+    if (!poolEnded) {
+      await pool.end();
+    }
   }
 });

@@ -5,6 +5,7 @@ import {
   isValidEmail,
   normalizeEmail
 } from "../services/editors.js";
+import { HttpError } from "../services/errors.js";
 import { requireEditor, setSessionCookie } from "./auth.js";
 import { bodyRecord, requiredText } from "./validation.js";
 
@@ -15,8 +16,7 @@ export function registerEditorRoutes(app: FastifyInstance): void {
     const email = normalizeEmail(requiredText(body, "email", 320));
 
     if (!isValidEmail(email)) {
-      reply.code(400);
-      return { error: "email is invalid." };
+      throw new HttpError(400, "email is invalid.");
     }
 
     const editor = await findOrCreateEditor(displayName, email);

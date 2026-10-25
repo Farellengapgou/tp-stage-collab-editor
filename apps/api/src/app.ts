@@ -19,18 +19,42 @@ export function buildApp() {
       return;
     }
 
-    if (
+    const databaseCode =
       typeof error === "object" &&
       error !== null &&
       "code" in error &&
-      error.code === "23505"
-    ) {
+      typeof error.code === "string"
+        ? error.code
+        : null;
+
+    if (databaseCode === "23505" || databaseCode === "23503") {
       reply.code(409).send({ error: "Conflict." });
       return;
     }
 
-    app.log.error(error);
+    if (databaseCode === "23514" || databaseCode === "22P02") {
+      reply.code(400).send({ error: "Invalid request." });
+      return;
+    }
+
+    if (
+      typeof error === "object" &&
+      error !== null &&
+      "statusCode" in error &&
+      typeof error.statusCode === "number" &&
+      error.statusCode >= 400 &&
+      error.statusCode < 500
+    ) {
+      reply.code(error.statusCode).send({ error: "Bad request." });
+      return;
+    }
+
+    app.log.error({ err: error }, "Unhandled request error");
     reply.code(500).send({ error: "Internal server error." });
+  });
+
+  app.setNotFoundHandler((_request, reply) => {
+    reply.code(404).send({ error: "Not found." });
   });
 
   return app;
