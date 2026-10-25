@@ -4,7 +4,11 @@ import { test } from "node:test";
 import { buildApp } from "../../src/app.js";
 import { pool } from "../../src/db.js";
 import { createCollaborationBackend } from "../../src/services/collaboration.js";
-import { addDocumentEditor, createDocument } from "../../src/services/documents.js";
+import {
+  addDocumentEditor,
+  createDocument,
+  ensureDocumentVersion
+} from "../../src/services/documents.js";
 import { createSession, findOrCreateEditor } from "../../src/services/editors.js";
 
 function submit(
@@ -51,6 +55,26 @@ test("document history and restoration", async () => {
     await addDocumentEditor(owner.id, document.id, collaborator.id);
     await submit(writer, owner.id, document.id, "owner-edit", 1, 0, ["A🤖"]);
     await submit(writer, collaborator.id, document.id, "collaborator-edit", 1, 1, [2, "!"]);
+
+    const versionReference = `edit_operations:${document.id}:1`;
+    assert.deepEqual(
+      await Promise.all([
+        ensureDocumentVersion(document.id, 1),
+        ensureDocumentVersion(document.id, 1)
+      ]),
+      [versionReference, versionReference]
+    );
+    const versions = await pool.query<{ count: number; snapshot_reference: string }>(
+      `SELECT COUNT(*)::int AS count, MIN(snapshot_reference) AS snapshot_reference
+       FROM document_versions
+       WHERE document_id = $1 AND revision = 1`,
+      [document.id]
+    );
+    assert.deepEqual(versions.rows[0], { count: 1, snapshot_reference: versionReference });
+    await assert.rejects(
+      ensureDocumentVersion(document.id, 3),
+      (error: { statusCode?: number }) => error.statusCode === 404
+    );
 
     const history = await app.inject({
       method: "GET",

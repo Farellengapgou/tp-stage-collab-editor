@@ -233,6 +233,37 @@ export async function getDocumentRevision(
   return { revision, content: await getRevisionContent(documentId, revision) };
 }
 
+export async function ensureDocumentVersion(
+  documentId: string,
+  revision: number
+): Promise<string> {
+  const current = await getCurrentDocumentState(documentId);
+  if (revision < 0 || !Number.isInteger(revision) || revision > current.revision) {
+    throw new HttpError(404, "Document revision not found.");
+  }
+
+  await getRevisionContent(documentId, revision);
+  const snapshotReference = `edit_operations:${documentId}:${revision}`;
+  const created = await pool.query<{ snapshot_reference: string }>(
+    `INSERT INTO document_versions (document_id, revision, snapshot_reference)
+     VALUES ($1, $2, $3)
+     ON CONFLICT (document_id, revision) DO NOTHING
+     RETURNING snapshot_reference`,
+    [documentId, revision, snapshotReference]
+  );
+  if (created.rows[0]) {
+    return created.rows[0].snapshot_reference;
+  }
+
+  const existing = await pool.query<{ snapshot_reference: string }>(
+    `SELECT snapshot_reference
+     FROM document_versions
+     WHERE document_id = $1 AND revision = $2`,
+    [documentId, revision]
+  );
+  return existing.rows[0].snapshot_reference;
+}
+
 function replacementOperation(current: string, target: string): TextOp {
   const currentPoints = Array.from(current);
   const targetPoints = Array.from(target);
