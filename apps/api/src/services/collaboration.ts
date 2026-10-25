@@ -1,8 +1,12 @@
+// point d'entrée pour le backend de collaboration en temps réel , il relie le serveur WebSocket à ShareDB et gère l'authentification des éditeurs
+
 import type { IncomingMessage } from "node:http";
 import type { Socket } from "node:net";
 import { Duplex } from "node:stream";
+import { createRequire } from "node:module";
 import ShareDB from "sharedb";
 import { type as textUnicode } from "ot-text-unicode";
+import { createClient } from "redis";
 import { WebSocket, WebSocketServer } from "ws";
 import type { FastifyInstance } from "fastify";
 import { getEditorFromSession } from "./editors.js";
@@ -12,6 +16,8 @@ import { pool } from "../db.js";
 
 const collectionName = "documents";
 const sessionCookieName = "collab_session";
+const require = createRequire(import.meta.url);
+const RedisPubSub = require("sharedb-redis-pubsub");
 
 class WebSocketJsonStream extends Duplex {
   constructor(private readonly socket: WebSocket) {
@@ -53,9 +59,13 @@ async function hasDocumentAccess(editorId: string, documentId: string): Promise<
   return result.rowCount === 1;
 }
 
-export function createCollaborationBackend(): ShareDB {
+export function createCollaborationBackend(pubsub?: ShareDB.PubSub): ShareDB {
   ShareDB.types.register(textUnicode);
-  const backend = new ShareDB({ db: new DocumentShareDb(), doNotCommitNoOps: true });
+  const backend = new ShareDB({
+    db: new DocumentShareDb(),
+    doNotCommitNoOps: true,
+    ...(pubsub ? { pubsub } : {})
+  });
 
   backend.use("connect", (request, next) => {
     request.agent.custom.editorId = request.req.editorId;
@@ -112,11 +122,55 @@ export function createCollaborationBackend(): ShareDB {
   return backend;
 }
 
+async function closeRedisClient(client: { isOpen: boolean; close(): Promise<void> }): Promise<void> {
+  if (client.isOpen) {
+    await client.close();
+  }
+}
+
+export async function createRedisPubSub(
+  redisUrl: string,
+  onError: (error: Error) => void
+): Promise<ShareDB.PubSub> {
+  const client = createClient({
+    url: redisUrl,
+    socket: { reconnectStrategy: false }
+  });
+  const observer = client.duplicate();
+  client.on("error", onError);
+  observer.on("error", onError);
+
+  try {
+    await Promise.all([client.connect(), observer.connect()]);
+    return new RedisPubSub({ client, observer }) as ShareDB.PubSub;
+  } catch (error) {
+    await Promise.allSettled([closeRedisClient(client), closeRedisClient(observer)]);
+    throw error;
+  }
+}
+
 export function installCollaboration(app: FastifyInstance): void {
-  const backend = createCollaborationBackend();
+  let backend: ShareDB | undefined;
+  const redisUrl = process.env.REDIS_URL;
+  if (redisUrl) {
+    app.addHook("onReady", async () => {
+      const pubsub = await createRedisPubSub(redisUrl, (error) => {
+        app.log.error({ err: error }, "Redis Pub/Sub error");
+      });
+      backend = createCollaborationBackend(pubsub);
+    });
+  } else {
+    backend = createCollaborationBackend();
+  }
   const webSocketServer = new WebSocketServer({ noServer: true });
   const upgrade = (request: IncomingMessage, socket: Socket, head: Buffer): void => {
     if (new URL(request.url ?? "/", "http://localhost").pathname !== "/ws") {
+      return;
+    }
+
+    if (!backend) {
+      socket.write("HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n");
+      socket.destroy();
       return;
     }
 
@@ -136,7 +190,7 @@ export function installCollaboration(app: FastifyInstance): void {
         }
 
         webSocketServer.handleUpgrade(request, socket, head, (webSocket) => {
-          backend.listen(new WebSocketJsonStream(webSocket), { editorId: editor.id });
+          backend?.listen(new WebSocketJsonStream(webSocket), { editorId: editor.id });
         });
       })
       .catch(() => {
@@ -149,6 +203,9 @@ export function installCollaboration(app: FastifyInstance): void {
   app.addHook("onClose", async () => {
     app.server.removeListener("upgrade", upgrade);
     webSocketServer.close();
-    await new Promise<void>((resolve) => backend.close(() => resolve()));
+    if (backend) {
+      const currentBackend = backend;
+      await new Promise<void>((resolve) => currentBackend.close(() => resolve()));
+    }
   });
 }
