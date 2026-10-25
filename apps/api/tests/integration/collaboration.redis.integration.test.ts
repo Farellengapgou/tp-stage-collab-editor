@@ -378,21 +378,24 @@ test("Redis Pub/Sub synchronizes separate ShareDB backends", { skip: !process.en
       const localPresence = firstPresence.create("first-cursor");
       await submitPresence(localPresence, {
         editorId: outsider.id,
-        selection: { anchor: 1, focus: 1 }
+        selection: { anchor: 1, focus: 1 },
+        typing: true
       });
       await waitFor(() => {
         const value = secondPresence.remotePresences["first-cursor"] as {
           editorId?: string;
           selection?: { anchor?: number; focus?: number };
+          typing?: boolean;
         } | undefined;
-        return value?.editorId === firstEditor.id && value.selection?.anchor === 1 && value.selection.focus === 1;
+        return value?.editorId === firstEditor.id && value.selection?.anchor === 1 && value.selection.focus === 1 && value.typing === true;
       });
 
       await submit(secondDocument, ["🤖"]);
       await waitFor(() => firstDocument.data === "🤖a");
       assert.deepEqual(localPresence.value, {
         editorId: outsider.id,
-        selection: { anchor: 2, focus: 2 }
+        selection: { anchor: 2, focus: 2 },
+        typing: true
       });
       await sendPresence(localPresence);
       await waitFor(() => {

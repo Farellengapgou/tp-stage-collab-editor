@@ -27,6 +27,7 @@ interface Selection {
 interface EditorPresence {
   editorId: string;
   selection: Selection;
+  typing?: boolean;
 }
 
 function isSelection(value: unknown): value is Selection {
@@ -210,10 +211,14 @@ export function createCollaborationBackend(pubsub?: ShareDB.PubSub): ShareDB {
     }
 
     if (presence.p !== null) {
-      const selection = (presence.p as { selection: Selection }).selection;
+      const submittedPresence = presence.p as { selection: Selection; typing?: unknown };
+      const selection = submittedPresence.selection;
       presence.p = {
         editorId,
-        selection
+        selection,
+        ...(typeof submittedPresence.typing === "boolean"
+          ? { typing: submittedPresence.typing }
+          : {})
       } satisfies EditorPresence;
     }
     next();

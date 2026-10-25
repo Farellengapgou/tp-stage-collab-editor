@@ -51,14 +51,25 @@ input:focus, textarea:focus { border-color: #173b5c; box-shadow: 0 0 0 3px #3864
 .editor-placeholder h2 { color: #1a2733; }
 .workspace { display: grid; gap: 18px; background: #fff; border: 1px solid #dce3e7; border-radius: 12px; padding: 28px; }
 .workspace-heading, .actions, .connection, .modal-heading { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.workspace-tools { display: flex; align-items: center; justify-content: end; gap: 16px; }
 .actions button, .modal-heading button { border: 1px solid #aebdc8; border-radius: 7px; padding: 8px 12px; background: #fff; color: #173b5c; font-weight: 650; }
 .connection { flex-wrap: wrap; color: #62717d; font-size: .88rem; }
+.typing-indicator { color: #315d9b; font-weight: 650; }
+.presence-avatars { position: relative; }
+.avatar-row { display: flex; align-items: center; }
+.avatar { width: 32px; height: 32px; display: inline-grid; place-items: center; flex: 0 0 auto; margin-left: -7px; border: 2px solid #fff; border-radius: 50%; color: #fff; font-size: .7rem; font-weight: 750; line-height: 1; box-shadow: 0 1px 3px #172a3a26; }
+.avatar:first-child { margin-left: 0; }
+.more-avatar { border: 2px solid #fff; background: #e4ebef; color: #38505f; }
+.presence-popover { position: absolute; z-index: 4; top: 40px; right: 0; min-width: 190px; padding: 8px; display: grid; gap: 5px; background: #fff; border: 1px solid #dce3e7; border-radius: 8px; box-shadow: 0 8px 22px #172a3a24; color: #263946; font-size: .86rem; }
+.presence-popover > div { display: flex; align-items: center; gap: 8px; }
+.avatar-small { width: 25px; height: 25px; margin: 0; border-width: 0; font-size: .62rem; }
 .editor-shell { position: relative; min-height: 420px; overflow: hidden; border: 1px solid #aebdc8; border-radius: 7px; background: #fff; }
 .editor, .editor-mirror { width: 100%; min-height: 420px; margin: 0; padding: 11px 12px; border: 0; border-radius: 7px; line-height: 1.6; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1rem; white-space: pre-wrap; overflow-wrap: break-word; }
 .editor-mirror { position: absolute; inset: 0; pointer-events: none; color: #1a2733; z-index: 0; }
 .editor-input { position: relative; z-index: 1; resize: vertical; color: transparent; caret-color: #173b5c; background: transparent; }
 .editor-input::placeholder { color: #62717d; }.editor-input:focus { box-shadow: inset 0 0 0 2px #386487; }
-.remote-cursor { display: inline-block; height: 1.25em; margin: 0 -1px; border-left: 2px solid #d34b65; vertical-align: text-bottom; }
+.remote-cursor { position: relative; display: inline-block; height: 1.25em; margin: 0 -1px; border-left: 2px solid #d34b65; vertical-align: text-bottom; }
+.remote-cursor::after { position: absolute; z-index: 2; top: -1.1em; left: -2px; max-width: 130px; padding: 1px 4px; overflow: hidden; color: #fff; background: currentColor; border-radius: 3px; content: attr(data-editor); font-family: Inter, ui-sans-serif, system-ui, sans-serif; font-size: .68rem; line-height: 1.35; text-overflow: ellipsis; white-space: nowrap; }
 .modal-backdrop { position: fixed; inset: 0; z-index: 10; display: grid; place-items: center; padding: 20px; background: #172a3a80; }
 .modal { width: min(680px, 100%); max-height: 85vh; overflow: auto; padding: 24px; background: #fff; border-radius: 12px; box-shadow: 0 18px 48px #0004; }
 .modal-heading { margin-bottom: 18px; }.modal-heading h2 { margin: 0; }
@@ -71,5 +82,5 @@ input:focus, textarea:focus { border-color: #173b5c; box-shadow: 0 0 0 3px #3864
   .page-heading { display: grid; gap: 10px; margin-bottom: 24px; }
   .documents-layout { grid-template-columns: 1fr; gap: 24px; }
   .creation-card, .authentication-card, .document-workspace { padding: 22px; }
-  .workspace { padding: 20px; }.workspace-heading { align-items: start; flex-direction: column; }.history-layout { grid-template-columns: 1fr; }
+  .workspace { padding: 20px; }.workspace-heading { align-items: start; flex-direction: column; }.workspace-tools { width: 100%; justify-content: space-between; }.history-layout { grid-template-columns: 1fr; }
 }

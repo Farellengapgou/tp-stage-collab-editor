@@ -39,16 +39,34 @@ function History({ id, revision, owner, close, refresh }: { id: string; revision
   return <Modal title="Historique" close={close}>{error && <p className="form-error">{error}</p>}<div className="history-layout"><div className="history-list">{items.map(item => <button key={item.revision} onClick={() => void inspect(item.revision)}>Révision {item.revision}<small>{item.author?.displayName ?? "Création"}</small></button>)}</div><div><pre className="revision-preview">{content || "Sélectionnez une révision."}</pre>{owner && selected !== undefined && selected !== revision && <button className="primary-button" onClick={() => void restore()}>Restaurer</button>}</div></div></Modal>;
 }
 
+const avatarColors = ["#9b3f6d", "#315d9b", "#16706b", "#9b621e", "#66479b", "#ad4251"];
+function colorFor(editorId: string) { return avatarColors[Array.from(editorId).reduce((hash, value) => (hash * 31 + value.charCodeAt(0)) >>> 0, 0) % avatarColors.length]; }
+function initials(name: string) { return name.split(/\s+/).filter(Boolean).slice(0, 2).map(part => part[0]).join("").toUpperCase(); }
+
+function PresenceAvatars({ editor, presences, members, connected: isConnected }: { editor: Editor; presences: CollaborationState["remotePresences"]; members: DocumentEditor[]; connected: boolean }) {
+  const [expanded, setExpanded] = useState(false);
+  const connected = isConnected
+    ? [...new Set([editor.id, ...Object.values(presences).map(presence => presence.editorId).filter((id): id is string => Boolean(id))])]
+      .map(id => id === editor.id ? editor : members.find(member => member.id === id))
+      .filter((member): member is Editor | DocumentEditor => Boolean(member))
+    : [];
+  if (connected.length === 0) return null;
+  const visible = connected.slice(0, 4);
+  return <div className="presence-avatars"><div className="avatar-row">{visible.map(member => <span key={member.id} className="avatar" style={{ backgroundColor: colorFor(member.id) }} title={member.displayName} aria-label={member.displayName}>{initials(member.displayName)}</span>)}{connected.length > 4 && <button className="avatar more-avatar" aria-label={`${connected.length - 4} rédacteurs supplémentaires`} onClick={() => setExpanded(value => !value)}>+{connected.length - 4}</button>}</div>{expanded && <div className="presence-popover">{connected.map(member => <div key={member.id}><span className="avatar avatar-small" style={{ backgroundColor: colorFor(member.id) }}>{initials(member.displayName)}</span>{member.displayName}</div>)}</div>}</div>;
+}
+
 function EditorMirror({ content, presences, members }: { content: string; presences: CollaborationState["remotePresences"]; members: DocumentEditor[] }) {
-  const cursors = new Map<number, string[]>();
+  const cursors = new Map<number, { id: string; name: string }[]>();
   for (const presence of Object.values(presences)) {
     if (typeof presence.selection?.focus !== "number") continue;
-    const name = members.find(member => member.id === presence.editorId)?.displayName ?? "Collaborateur";
+    const member = members.find(member => member.id === presence.editorId);
+    const name = member?.displayName ?? "Collaborateur";
+    const id = member?.id ?? presence.editorId ?? name;
     const at = Math.max(0, Math.min(Array.from(content).length, presence.selection.focus));
-    cursors.set(at, [...(cursors.get(at) ?? []), name]);
+    cursors.set(at, [...(cursors.get(at) ?? []), { id, name }]);
   }
   const characters = Array.from(content);
-  return <pre className="editor-mirror" aria-hidden="true">{characters.map((character, index) => <Fragment key={index}>{cursors.get(index)?.map(name => <span key={name} className="remote-cursor" title={`${name} écrit ici`} />)}{character}</Fragment>)}{cursors.get(characters.length)?.map(name => <span key={name} className="remote-cursor" title={`${name} écrit ici`} />)}{"\n"}</pre>;
+  return <pre className="editor-mirror" aria-hidden="true">{characters.map((character, index) => <Fragment key={index}>{cursors.get(index)?.map(cursor => <span key={cursor.id} className="remote-cursor" style={{ borderColor: colorFor(cursor.id), color: colorFor(cursor.id) }} data-editor={cursor.name} title={`${cursor.name} écrit ici`} />)}{character}</Fragment>)}{cursors.get(characters.length)?.map(cursor => <span key={cursor.id} className="remote-cursor" style={{ borderColor: colorFor(cursor.id), color: colorFor(cursor.id) }} data-editor={cursor.name} title={`${cursor.name} écrit ici`} />)}{"\n"}</pre>;
 }
 
 function DocumentPage({ editor, id }: { editor: Editor; id: string }) {
@@ -57,9 +75,9 @@ function DocumentPage({ editor, id }: { editor: Editor; id: string }) {
   useEffect(() => { refresh(); const instance = new CollaborativeDocument(id, setState, setError); client.current = instance; instance.start(); return () => instance.stop(); }, [id]);
   function change() { const value = area.current?.value ?? ""; client.current?.submitChange(value); setState(current => ({ ...current, content: value })); }
   function selection() { const node = area.current; if (node) client.current?.updateSelection(state.content, node.selectionStart, node.selectionEnd); }
-  const cursors = Object.values(state.remotePresences).map(p => `${members.find(m => m.id === p.editorId)?.displayName ?? "Collaborateur"} (${p.selection?.focus ?? 0})`);
+  const typingEditors = [...new Set(Object.values(state.remotePresences).filter(presence => presence.typing).map(presence => members.find(member => member.id === presence.editorId)?.displayName ?? "Collaborateur"))];
   if (!doc) return <><Header editor={editor}/><main className="page-shell">Chargement… {error && <p className="form-error">{error}</p>}</main></>;
-  return <><Header editor={editor}/><main className="page-shell document-page"><button className="back-link" onClick={() => go("/documents")}>← Documents</button><section className="workspace"><div className="workspace-heading"><div><p className="eyebrow">Document partagé</p><h1>{doc.title}</h1>{doc.description && <p>{doc.description}</p>}</div><div className="actions">{doc.role === "owner" && <button onClick={() => setShare(true)}>Partager</button>}<button onClick={() => setHistory(true)}>Historique</button></div></div><div className="connection"><span>{state.connected ? state.saving ? "Enregistrement…" : "Enregistré" : state.synchronizing ? "Synchronisation…" : "Reconnexion…"}</span><span>Révision {state.revision}</span><span>{cursors.length ? `Curseurs : ${cursors.join(", ")}` : "Aucun autre rédacteur connecté"}</span></div>{error && <p className="form-error">{error}</p>}<div className="editor-shell"><EditorMirror content={state.content} presences={state.remotePresences} members={members}/><textarea ref={area} className="editor editor-input" value={state.content} onChange={change} onSelect={selection} onKeyUp={selection} disabled={!state.connected || state.synchronizing} placeholder={state.synchronizing ? "Synchronisation du document…" : "Commencez à écrire…"}/></div></section></main>{share && <Share id={id} close={() => setShare(false)} refresh={refresh}/>} {history && <History id={id} revision={state.revision} owner={doc.role === "owner"} close={() => setHistory(false)} refresh={refresh}/>}</>;
+  return <><Header editor={editor}/><main className="page-shell document-page"><button className="back-link" onClick={() => go("/documents")}>← Documents</button><section className="workspace"><div className="workspace-heading"><div><p className="eyebrow">Document partagé</p><h1>{doc.title}</h1>{doc.description && <p>{doc.description}</p>}</div><div className="workspace-tools"><PresenceAvatars editor={editor} presences={state.remotePresences} members={members} connected={state.connected}/><div className="actions">{doc.role === "owner" && <button onClick={() => setShare(true)}>Partager</button>}<button onClick={() => setHistory(true)}>Historique</button></div></div></div><div className="connection"><span>{state.connected ? state.saving ? "Enregistrement…" : "Enregistré" : state.synchronizing ? "Synchronisation…" : "Reconnexion…"}</span><span>Révision {state.revision}</span>{typingEditors.length > 0 && <span className="typing-indicator">{typingEditors.join(", ")} {typingEditors.length > 1 ? "écrivent…" : "écrit…"}</span>}</div>{error && <p className="form-error">{error}</p>}<div className="editor-shell"><EditorMirror content={state.content} presences={state.remotePresences} members={members}/><textarea ref={area} className="editor editor-input" value={state.content} onChange={change} onSelect={selection} onKeyUp={selection} disabled={!state.connected || state.synchronizing} placeholder={state.synchronizing ? "Synchronisation du document…" : "Commencez à écrire…"}/></div></section></main>{share && <Share id={id} close={() => setShare(false)} refresh={refresh}/>} {history && <History id={id} revision={state.revision} owner={doc.role === "owner"} close={() => setHistory(false)} refresh={refresh}/>}</>;
 }
 
 function App() { const [editor, setEditor] = useState<Editor | null>(null); const [ready, setReady] = useState(false); const [current, setCurrent] = useState(route()); useEffect(() => { const update = () => setCurrent(route()); addEventListener("hashchange", update); return () => removeEventListener("hashchange", update); }, []); useEffect(() => { void getCurrentEditor().then(setEditor).catch(() => setEditor(null)).finally(() => setReady(true)); }, []); if (!ready) return <main className="authentication-page">Vérification de la session…</main>; if (!editor) return <Login done={setEditor}/>; const match = current.match(/^\/documents\/([0-9a-f-]{36})$/i); return match ? <DocumentPage editor={editor} id={match[1]}/> : <Dashboard editor={editor}/>; }

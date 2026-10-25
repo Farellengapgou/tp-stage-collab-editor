@@ -49,7 +49,7 @@ export interface CollaborationState {
   connected: boolean;
   synchronizing: boolean;
   saving: boolean;
-  remotePresences: Record<string, { editorId?: string; selection?: { anchor: number; focus: number } }>;
+  remotePresences: Record<string, { editorId?: string; selection?: { anchor: number; focus: number }; typing?: boolean }>;
 }
 
 function websocketUrl(): string {
@@ -67,6 +67,9 @@ export class CollaborativeDocument {
   private stopped = false;
   private saving = false;
   private initialized = false;
+  private selection = { anchor: 0, focus: 0 };
+  private typingTimer: number | null = null;
+  private typing = false;
 
   constructor(
     private readonly documentId: string,
@@ -81,6 +84,7 @@ export class CollaborativeDocument {
   stop(): void {
     this.stopped = true;
     if (this.reconnectTimer !== null) window.clearTimeout(this.reconnectTimer);
+    if (this.typingTimer !== null) window.clearTimeout(this.typingTimer);
     this.connection?.close();
     this.socket?.close();
   }
@@ -101,6 +105,7 @@ export class CollaborativeDocument {
     const inserted = to.slice(prefix, to.length - suffix).join("");
     if (inserted) operation.push(inserted);
     this.saving = true;
+    this.setTyping(true);
     this.document.submitOp(operation, (error: Error | null) => {
       this.saving = false;
       if (error) {
@@ -112,9 +117,26 @@ export class CollaborativeDocument {
   }
 
   updateSelection(value: string, selectionStart: number, selectionEnd: number): void {
-    if (!this.localPresence) return;
     const points = (offset: number) => Array.from(value.slice(0, offset)).length;
-    this.localPresence.submit({ selection: { anchor: points(selectionStart), focus: points(selectionEnd) } }, () => {});
+    this.selection = { anchor: points(selectionStart), focus: points(selectionEnd) };
+    this.publishPresence(this.typing);
+  }
+
+  private setTyping(typing: boolean): void {
+    this.typing = typing;
+    this.publishPresence(typing);
+    if (this.typingTimer !== null) window.clearTimeout(this.typingTimer);
+    if (typing) {
+      this.typingTimer = window.setTimeout(() => {
+        this.typing = false;
+        this.publishPresence(false);
+      }, 900);
+    }
+  }
+
+  private publishPresence(typing: boolean): void {
+    if (!this.localPresence) return;
+    this.localPresence.submit({ selection: this.selection, typing }, () => {});
     this.localPresence.send(() => {});
   }
 
@@ -145,6 +167,7 @@ export class CollaborativeDocument {
       this.presence.subscribe((presenceError: Error | null) => {
         if (presenceError) return this.onError(presenceError.message);
         this.localPresence = this.presence.create("cursor");
+        this.publishPresence(false);
         this.emit();
       });
       this.emit();
