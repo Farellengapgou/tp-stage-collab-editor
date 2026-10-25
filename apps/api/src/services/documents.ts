@@ -48,6 +48,13 @@ export interface DocumentRevision {
   content: string;
 }
 
+export interface DocumentEditor {
+  id: string;
+  displayName: string;
+  email: string;
+  role: DocumentRole;
+}
+
 function toDocumentSummary(document: DocumentRow): DocumentSummary {
   return {
     id: document.id,
@@ -145,6 +152,32 @@ export async function getDocument(
   }
 
   return toDocumentSummary(document);
+}
+
+export async function listDocumentEditors(
+  editorId: string,
+  documentId: string
+): Promise<DocumentEditor[]> {
+  await getDocument(editorId, documentId);
+  const result = await pool.query<{
+    id: string;
+    name: string;
+    email: string;
+    role: DocumentRole;
+  }>(
+    `SELECT editors.id, editors.name, editors.email, document_editors.role
+     FROM document_editors
+     INNER JOIN editors ON editors.id = document_editors.editor_id
+     WHERE document_editors.document_id = $1
+     ORDER BY document_editors.role DESC, editors.name`,
+    [documentId]
+  );
+  return result.rows.map((row) => ({
+    id: row.id,
+    displayName: row.name,
+    email: row.email,
+    role: row.role
+  }));
 }
 
 async function getCurrentDocumentState(

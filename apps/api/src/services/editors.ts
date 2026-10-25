@@ -49,6 +49,16 @@ export async function findOrCreateEditor(
   return toPublicEditor(result.rows[0]);
 }
 
+export async function findEditorByEmail(email: string): Promise<PublicEditor | null> {
+  const result = await pool.query<EditorRow>(
+    `SELECT id, name, email, is_admin, created_at
+     FROM editors
+     WHERE email = $1`,
+    [email]
+  );
+  return result.rows[0] ? toPublicEditor(result.rows[0]) : null;
+}
+
 export async function createSession(editorId: string): Promise<{
   token: string;
   expiresAt: Date;

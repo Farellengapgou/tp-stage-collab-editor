@@ -9,8 +9,12 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "events": "^3.3.0",
+    "ot-text-unicode": "^4.0.0",
     "react": "^19.2.0",
-    "react-dom": "^19.2.0"
+    "react-dom": "^19.2.0",
+    "sharedb": "^6.0.5",
+    "util": "^0.12.5"
   },
   "devDependencies": {
     "@types/react": "^19.2.7",
