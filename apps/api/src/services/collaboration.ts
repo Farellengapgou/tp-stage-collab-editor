@@ -19,6 +19,94 @@ const sessionCookieName = "collab_session";
 const require = createRequire(import.meta.url);
 const RedisPubSub = require("sharedb-redis-pubsub");
 
+interface Selection {
+  anchor: number;
+  focus: number;
+}
+
+interface EditorPresence {
+  editorId: string;
+  selection: Selection;
+}
+
+function isSelection(value: unknown): value is Selection {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "anchor" in value &&
+    "focus" in value &&
+    typeof value.anchor === "number" &&
+    Number.isInteger(value.anchor) &&
+    value.anchor >= 0 &&
+    typeof value.focus === "number" &&
+    Number.isInteger(value.focus) &&
+    value.focus >= 0
+  );
+}
+
+function transformPosition(position: number, operation: unknown[], isOwnOperation: boolean): number {
+  let sourcePosition = 0;
+  let transformedPosition = 0;
+
+  for (const component of operation) {
+    if (typeof component === "number") {
+      if (position <= sourcePosition + component) {
+        return transformedPosition + position - sourcePosition;
+      }
+      sourcePosition += component;
+      transformedPosition += component;
+      continue;
+    }
+
+    if (typeof component === "string") {
+      if (position > sourcePosition || (position === sourcePosition && isOwnOperation)) {
+        transformedPosition += Array.from(component).length;
+      }
+      continue;
+    }
+
+    if (
+      typeof component === "object" &&
+      component !== null &&
+      "d" in component &&
+      (typeof component.d === "number" || typeof component.d === "string")
+    ) {
+      const deleted = typeof component.d === "number" ? component.d : Array.from(component.d).length;
+      if (position <= sourcePosition + deleted) {
+        return transformedPosition;
+      }
+      sourcePosition += deleted;
+    }
+  }
+
+  return transformedPosition + position - sourcePosition;
+}
+
+function transformEditorPresence(
+  value: unknown,
+  operation: unknown[],
+  isOwnOperation: boolean
+): unknown {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    !("selection" in value) ||
+    !isSelection(value.selection)
+  ) {
+    return value;
+  }
+
+  return {
+    ...value,
+    selection: {
+      anchor: transformPosition(value.selection.anchor, operation, isOwnOperation),
+      focus: transformPosition(value.selection.focus, operation, isOwnOperation)
+    }
+  };
+}
+
+Object.assign(textUnicode, { transformPresence: transformEditorPresence });
+
 class WebSocketJsonStream extends Duplex {
   constructor(private readonly socket: WebSocket) {
     super({ objectMode: true });
@@ -64,11 +152,70 @@ export function createCollaborationBackend(pubsub?: ShareDB.PubSub): ShareDB {
   const backend = new ShareDB({
     db: new DocumentShareDb(),
     doNotCommitNoOps: true,
+    doNotForwardSendPresenceErrorsToClient: true,
+    presence: true,
     ...(pubsub ? { pubsub } : {})
   });
 
   backend.use("connect", (request, next) => {
     request.agent.custom.editorId = request.req.editorId;
+    next();
+  });
+
+  backend.use("receive", (request, next) => {
+    const data = request.data as { a?: string; c?: unknown; d?: unknown; ch?: unknown };
+    if (!(["p", "ps", "pr"].includes(data.a ?? ""))) {
+      next();
+      return;
+    }
+
+    const documentId = typeof data.d === "string"
+      ? data.d
+      : typeof data.ch === "string" && data.ch.startsWith(`${collectionName}.`)
+        ? data.ch.slice(collectionName.length + 1)
+        : undefined;
+    const editorId = request.agent.custom.editorId;
+    if (
+      !editorId ||
+      data.c !== undefined && data.c !== collectionName ||
+      !documentId ||
+      (typeof data.ch === "string" && data.ch !== `${collectionName}.${documentId}`)
+    ) {
+      next(new Error("Document presence rejected."));
+      return;
+    }
+
+    void hasDocumentAccess(editorId, documentId)
+      .then((allowed) => next(allowed ? undefined : new Error("Document access denied.")))
+      .catch(next);
+  });
+
+  backend.use("receivePresence", (request, next) => {
+    const editorId = request.agent.custom.editorId;
+    const presence = request.presence as { p: unknown; c?: string; d?: string; ch: string };
+    if (
+      !editorId ||
+      presence.c !== collectionName ||
+      !presence.d ||
+      presence.ch !== `${collectionName}.${presence.d}` ||
+      (presence.p !== null && (
+        typeof presence.p !== "object" ||
+        presence.p === null ||
+        !("selection" in presence.p) ||
+        !isSelection(presence.p.selection)
+      ))
+    ) {
+      next(new Error("Document presence rejected."));
+      return;
+    }
+
+    if (presence.p !== null) {
+      const selection = (presence.p as { selection: Selection }).selection;
+      presence.p = {
+        editorId,
+        selection
+      } satisfies EditorPresence;
+    }
     next();
   });
 

@@ -10,15 +10,29 @@ import { createSession, findOrCreateEditor } from "../../src/services/editors.js
 
 interface ShareDocument {
   data: unknown;
+  type: { transformPresence?: unknown } | null;
   subscribe(callback: (error: Error | null) => void): void;
   submitOp(operation: unknown[], callback: (error: Error | null) => void): void;
   whenNothingPending(callback: () => void): void;
+}
+
+interface LocalDocPresence {
+  value: unknown;
+  submit(value: unknown, callback: (error: Error | null) => void): void;
+  send(callback: (error: Error | null) => void): void;
+}
+
+interface DocPresence {
+  remotePresences: Record<string, unknown>;
+  subscribe(callback: (error: Error | null) => void): void;
+  create(id: string): LocalDocPresence;
 }
 
 interface ShareConnection {
   on(event: string, callback: (error?: Error) => void): void;
   bindToSocket(socket: ShareDbWebSocket): void;
   get(collection: string, id: string): ShareDocument;
+  getDocPresence(collection: string, id: string): DocPresence;
   close(): void;
 }
 
@@ -111,6 +125,24 @@ function submit(document: ShareDocument, operation: unknown[]): Promise<void> {
   });
 }
 
+function subscribePresence(presence: DocPresence): Promise<void> {
+  return new Promise((resolve, reject) => {
+    presence.subscribe((error) => error ? reject(error) : resolve());
+  });
+}
+
+function submitPresence(presence: LocalDocPresence, value: unknown): Promise<void> {
+  return new Promise((resolve, reject) => {
+    presence.submit(value, (error) => error ? reject(error) : resolve());
+  });
+}
+
+function sendPresence(presence: LocalDocPresence): Promise<void> {
+  return new Promise((resolve, reject) => {
+    presence.send((error) => error ? reject(error) : resolve());
+  });
+}
+
 function restoreRedisUrl(value: string | undefined): void {
   if (value === undefined) {
     delete process.env.REDIS_URL;
@@ -180,6 +212,7 @@ test("Redis Pub/Sub synchronizes separate ShareDB backends", { skip: !process.en
       const firstDocument = firstClient.connection.get("documents", documentId);
       const secondDocument = secondClient.connection.get("documents", documentId);
       await Promise.all([subscribe(firstDocument), subscribe(secondDocument)]);
+      assert.equal(typeof firstDocument.type?.transformPresence, "function");
 
       await submit(firstDocument, ["A"]);
       await new Promise<void>((resolve) => secondDocument.whenNothingPending(resolve));
@@ -295,6 +328,90 @@ test("Redis Pub/Sub synchronizes separate ShareDB backends", { skip: !process.en
       recoveringClient?.connection.close();
       activeClient?.connection.close();
       await Promise.all([firstAppClosed ? Promise.resolve() : firstApp.close(), secondApp.close()]);
+    }
+  });
+
+  await t.test("presence is authorized, propagated, transformed and removed across instances", async () => {
+    const firstApp = buildApp();
+    const secondApp = buildApp();
+    const suffix = randomUUID();
+    const documentId = randomUUID();
+    const firstEditor = await findOrCreateEditor("First", `presence-first-${suffix}@example.test`);
+    const secondEditor = await findOrCreateEditor("Second", `presence-second-${suffix}@example.test`);
+    const outsider = await findOrCreateEditor("Outsider", `presence-outsider-${suffix}@example.test`);
+    const firstSession = await createSession(firstEditor.id);
+    const secondSession = await createSession(secondEditor.id);
+    const outsiderSession = await createSession(outsider.id);
+    let firstClient: { connection: ShareConnection; socket: ShareDbWebSocket } | undefined;
+    let secondClient: { connection: ShareConnection; socket: ShareDbWebSocket } | undefined;
+    let outsiderClient: { connection: ShareConnection; socket: ShareDbWebSocket } | undefined;
+
+    try {
+      await pool.query("INSERT INTO documents (id, title) VALUES ($1, 'Presence document')", [documentId]);
+      await pool.query(
+        `INSERT INTO document_editors (document_id, editor_id, role)
+         VALUES ($1, $2, 'owner'), ($1, $3, 'editor')`,
+        [documentId, firstEditor.id, secondEditor.id]
+      );
+      await pool.query(
+        "INSERT INTO document_states (document_id, content, revision) VALUES ($1, 'a', 0)",
+        [documentId]
+      );
+      await Promise.all([
+        firstApp.listen({ port: 0, host: "127.0.0.1" }),
+        secondApp.listen({ port: 0, host: "127.0.0.1" })
+      ]);
+      const firstAddress = firstApp.server.address() as AddressInfo;
+      const secondAddress = secondApp.server.address() as AddressInfo;
+      firstClient = await connect(`ws://127.0.0.1:${firstAddress.port}/ws`, firstSession.token);
+      secondClient = await connect(`ws://127.0.0.1:${secondAddress.port}/ws`, secondSession.token);
+      outsiderClient = await connect(`ws://127.0.0.1:${secondAddress.port}/ws`, outsiderSession.token);
+
+      const firstDocument = firstClient.connection.get("documents", documentId);
+      const secondDocument = secondClient.connection.get("documents", documentId);
+      await Promise.all([subscribe(firstDocument), subscribe(secondDocument)]);
+      assert.equal(typeof firstDocument.type?.transformPresence, "function");
+      const firstPresence = firstClient.connection.getDocPresence("documents", documentId);
+      const secondPresence = secondClient.connection.getDocPresence("documents", documentId);
+      await Promise.all([subscribePresence(firstPresence), subscribePresence(secondPresence)]);
+
+      const localPresence = firstPresence.create("first-cursor");
+      await submitPresence(localPresence, {
+        editorId: outsider.id,
+        selection: { anchor: 1, focus: 1 }
+      });
+      await waitFor(() => {
+        const value = secondPresence.remotePresences["first-cursor"] as {
+          editorId?: string;
+          selection?: { anchor?: number; focus?: number };
+        } | undefined;
+        return value?.editorId === firstEditor.id && value.selection?.anchor === 1 && value.selection.focus === 1;
+      });
+
+      await submit(secondDocument, ["🤖"]);
+      await waitFor(() => firstDocument.data === "🤖a");
+      assert.deepEqual(localPresence.value, {
+        editorId: outsider.id,
+        selection: { anchor: 2, focus: 2 }
+      });
+      await sendPresence(localPresence);
+      await waitFor(() => {
+        const value = secondPresence.remotePresences["first-cursor"] as {
+          selection?: { anchor?: number; focus?: number };
+        } | undefined;
+        return value?.selection?.anchor === 2 && value.selection.focus === 2;
+      });
+
+      const outsiderPresence = outsiderClient.connection.getDocPresence("documents", documentId);
+      await assert.rejects(subscribePresence(outsiderPresence));
+
+      firstClient.connection.close();
+      await waitFor(() => !("first-cursor" in secondPresence.remotePresences));
+    } finally {
+      firstClient?.connection.close();
+      secondClient?.connection.close();
+      outsiderClient?.connection.close();
+      await Promise.all([firstApp.close(), secondApp.close()]);
     }
   });
 
