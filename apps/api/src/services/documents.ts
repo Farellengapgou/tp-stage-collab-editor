@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { PoolClient } from "pg";
 import ShareDB from "sharedb";
 import { type as textUnicode, type TextOp } from "ot-text-unicode";
 import { pool } from "../db.js";
@@ -20,6 +21,8 @@ interface OperationRow {
   accepted_revision: number;
   operation: unknown;
 }
+
+type DatabaseQuery = Pick<PoolClient, "query">;
 
 interface HistoryRow extends OperationRow {
   base_revision: number;
@@ -144,8 +147,11 @@ export async function getDocument(
   return toDocumentSummary(document);
 }
 
-async function getCurrentDocumentState(documentId: string): Promise<{ content: string; revision: number }> {
-  const result = await pool.query<{ content: string; revision: number }>(
+async function getCurrentDocumentState(
+  documentId: string,
+  database: DatabaseQuery = pool
+): Promise<{ content: string; revision: number }> {
+  const result = await database.query<{ content: string; revision: number }>(
     "SELECT content, revision FROM document_states WHERE document_id = $1",
     [documentId]
   );
@@ -156,8 +162,12 @@ async function getCurrentDocumentState(documentId: string): Promise<{ content: s
   return state;
 }
 
-async function getRevisionContent(documentId: string, revision: number): Promise<string> {
-  const operations = await pool.query<OperationRow>(
+async function getRevisionContent(
+  documentId: string,
+  revision: number,
+  database: DatabaseQuery = pool
+): Promise<string> {
+  const operations = await database.query<OperationRow>(
     `SELECT accepted_revision, operation
      FROM edit_operations
      WHERE document_id = $1 AND accepted_revision <= $2
@@ -237,14 +247,30 @@ export async function ensureDocumentVersion(
   documentId: string,
   revision: number
 ): Promise<string> {
-  const current = await getCurrentDocumentState(documentId);
+  return ensureDocumentVersionWithDatabase(pool, documentId, revision);
+}
+
+export async function ensureDocumentVersionInTransaction(
+  client: PoolClient,
+  documentId: string,
+  revision: number
+): Promise<string> {
+  return ensureDocumentVersionWithDatabase(client, documentId, revision);
+}
+
+async function ensureDocumentVersionWithDatabase(
+  database: DatabaseQuery,
+  documentId: string,
+  revision: number
+): Promise<string> {
+  const current = await getCurrentDocumentState(documentId, database);
   if (revision < 0 || !Number.isInteger(revision) || revision > current.revision) {
     throw new HttpError(404, "Document revision not found.");
   }
 
-  await getRevisionContent(documentId, revision);
+  await getRevisionContent(documentId, revision, database);
   const snapshotReference = `edit_operations:${documentId}:${revision}`;
-  const created = await pool.query<{ snapshot_reference: string }>(
+  const created = await database.query<{ snapshot_reference: string }>(
     `INSERT INTO document_versions (document_id, revision, snapshot_reference)
      VALUES ($1, $2, $3)
      ON CONFLICT (document_id, revision) DO NOTHING
@@ -255,7 +281,7 @@ export async function ensureDocumentVersion(
     return created.rows[0].snapshot_reference;
   }
 
-  const existing = await pool.query<{ snapshot_reference: string }>(
+  const existing = await database.query<{ snapshot_reference: string }>(
     `SELECT snapshot_reference
      FROM document_versions
      WHERE document_id = $1 AND revision = $2`,
