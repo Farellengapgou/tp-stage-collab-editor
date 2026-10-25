@@ -53,6 +53,14 @@ export interface CollaborationState {
 }
 
 function websocketUrl(): string {
+  const configured = import.meta.env.VITE_WS_URL?.trim();
+  if (configured) {
+    if (configured.startsWith("/")) {
+      const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+      return `${protocol}//${window.location.host}${configured}`;
+    }
+    return configured;
+  }
   const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
   return `${protocol}//${window.location.host}/ws`;
 }
@@ -116,10 +124,15 @@ export class CollaborativeDocument {
       this.saving = false;
       if (error) {
         this.onError(error.message);
-        this.document.fetch();
+        this.document.fetch((fetchError: Error | null) => {
+          if (fetchError) this.onError(fetchError.message);
+          this.emit();
+        });
+        return;
       }
       this.emit();
     });
+    this.emit();
   }
 
   updateSelection(value: string, selectionStart: number, selectionEnd: number): void {

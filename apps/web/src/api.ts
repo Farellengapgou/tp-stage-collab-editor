@@ -7,8 +7,14 @@ import {
   type Publication
 } from "./types";
 
+const apiBaseUrl = (import.meta.env.VITE_API_BASE_URL?.trim() || "/api").replace(/\/+$/, "");
+
+function apiPath(path: string): string {
+  return `${apiBaseUrl}${path}`;
+}
+
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
-  const response = await fetch(`/api${path}`, {
+  const response = await fetch(apiPath(path), {
     ...options,
     credentials: "include",
     headers: {
@@ -43,7 +49,7 @@ export async function getPublication(token: string): Promise<Publication> {
 export async function downloadPublication(token: string): Promise<Blob> {
   const idempotencyKey = crypto.randomUUID();
   for (let attempt = 0; attempt < 12; attempt++) {
-    const response = await fetch(`/api/downloads/${token}`, {
+    const response = await fetch(apiPath(`/downloads/${token}`), {
       method: "POST",
       credentials: "include",
       headers: { "Content-Type": "application/json" },
@@ -67,7 +73,7 @@ export async function downloadPublication(token: string): Promise<Blob> {
 }
 
 export async function diagnosticPdf(path: string, options: RequestInit = {}): Promise<{ blob: Blob; status: number; contentType: string }> {
-  const response = await fetch(`/api${path}`, { ...options, credentials: "include", headers: options.body ? { "Content-Type": "application/json" } : undefined });
+  const response = await fetch(apiPath(path), { ...options, credentials: "include", headers: options.body ? { "Content-Type": "application/json" } : undefined });
   const contentType = response.headers.get("content-type") ?? "";
   if (!response.ok || !contentType.includes("application/pdf")) throw new ApiError(await response.text(), response.status);
   return { blob: await response.blob(), status: response.status, contentType };
