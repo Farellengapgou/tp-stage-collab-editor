@@ -89,6 +89,12 @@ export class CollaborativeDocument {
     this.socket?.close();
   }
 
+  blur(): void {
+    if (this.typingTimer !== null) window.clearTimeout(this.typingTimer);
+    this.typing = false;
+    this.publishPresence(false);
+  }
+
   submitChange(next: string): void {
     const previous = typeof this.document?.data === "string" ? this.document.data : "";
     if (!this.document || previous === next) return;
@@ -136,8 +142,12 @@ export class CollaborativeDocument {
 
   private publishPresence(typing: boolean): void {
     if (!this.localPresence) return;
-    this.localPresence.submit({ selection: this.selection, typing }, () => {});
-    this.localPresence.send(() => {});
+    this.localPresence.submit({ selection: this.selection, typing }, (error: Error | null) => {
+      if (error) return this.onError(error.message);
+      this.localPresence.send((sendError: Error | null) => {
+        if (sendError) this.onError(sendError.message);
+      });
+    });
   }
 
   private connect(): void {
@@ -148,6 +158,7 @@ export class CollaborativeDocument {
     }
     this.connection = new ShareDB.Connection(this.socket);
     this.connection.on("state", (state: string) => {
+      if (state === "connected" && this.localPresence) this.publishPresence(this.typing);
       this.emit();
       if (state === "disconnected" && !this.stopped) {
         this.reconnectTimer = window.setTimeout(() => this.connect(), 1_000);
@@ -181,7 +192,7 @@ export class CollaborativeDocument {
       connected: this.connection?.state === "connected",
       synchronizing: this.connection?.state === "connecting" || !this.initialized,
       saving: this.saving || Boolean(this.document?.hasPending?.()),
-      remotePresences: this.presence?.remotePresences ?? {}
+      remotePresences: this.connection?.state === "connected" ? this.presence?.remotePresences ?? {} : {}
     });
   }
 }

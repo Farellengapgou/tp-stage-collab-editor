@@ -16,7 +16,7 @@ import { pool } from "../db.js";
 
 const collectionName = "documents";
 const sessionCookieName = "collab_session";
-const require = createRequire(import.meta.url);
+const require = createRequire(import.meta.url);  // chargement de l'adaptateur permettant à reddis de communiquer avec sharedb 
 const RedisPubSub = require("sharedb-redis-pubsub");
 
 interface Selection {
@@ -108,11 +108,11 @@ function transformEditorPresence(
 
 Object.assign(textUnicode, { transformPresence: transformEditorPresence });
 
-class WebSocketJsonStream extends Duplex {
+class WebSocketJsonStream extends Duplex { // adaptateur entre le flux d'objet JavaScript et les messages websocket 
   constructor(private readonly socket: WebSocket) {
     super({ objectMode: true });
 
-    socket.on("message", (data, isBinary) => {
+    socket.on("message", (data, isBinary) => { // reception d'unmessage , les binaires ne sont pas acceptés 
       if (isBinary) {
         this.destroy(new Error("Binary WebSocket messages are not supported."));
         return;
@@ -129,7 +129,8 @@ class WebSocketJsonStream extends Duplex {
   }
 
   _read(): void {}
-
+  
+  // envoi d'un message sur le websocket
   _write(chunk: unknown, _encoding: BufferEncoding, callback: (error?: Error | null) => void): void {
     if (this.socket.readyState !== WebSocket.OPEN) {
       callback(new Error("WebSocket is closed."));
@@ -139,7 +140,7 @@ class WebSocketJsonStream extends Duplex {
     this.socket.send(JSON.stringify(chunk), callback);
   }
 }
-
+// Cette fonction vérifie dans PostgreSQL si un rédacteur est associé à un document.
 async function hasDocumentAccess(editorId: string, documentId: string): Promise<boolean> {
   const result = await pool.query(
     "SELECT 1 FROM document_editors WHERE document_id = $1 AND editor_id = $2",
@@ -148,11 +149,11 @@ async function hasDocumentAccess(editorId: string, documentId: string): Promise<
   return result.rowCount === 1;
 }
 
-export function createCollaborationBackend(pubsub?: ShareDB.PubSub): ShareDB {
+export function createCollaborationBackend(pubsub?: ShareDB.PubSub): ShareDB { // construction d'une instance shareDB 
   ShareDB.types.register(textUnicode);
   const backend = new ShareDB({
     db: new DocumentShareDb(),
-    doNotCommitNoOps: true,
+    doNotCommitNoOps: true, // évite de persister certaines opérations devenues sans effet
     doNotForwardSendPresenceErrorsToClient: true,
     presence: true,
     ...(pubsub ? { pubsub } : {})

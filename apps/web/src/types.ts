@@ -17,6 +17,19 @@ export interface DocumentSummary {
   role: "owner" | "editor";
 }
 
+export interface Publication {
+  documentId: string;
+  publicToken: string;
+  title: string;
+  author: string;
+  publishedAt: string;
+  revision: number;
+  maxDownloads: number;
+  consumedDownloads: number;
+  activeReservations: number;
+  isActive: boolean;
+}
+
 export interface DocumentEditor {
   id: string;
   displayName: string;

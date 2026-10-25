@@ -11,6 +11,21 @@ interface DownloadLinkRow {
   consumed_downloads: number;
   active_reservations: number;
   is_active: boolean;
+  published_revision: number | null;
+  published_at: Date | null;
+}
+
+export interface Publication {
+  documentId: string;
+  publicToken: string;
+  title: string;
+  author: string;
+  publishedAt: string;
+  revision: number;
+  maxDownloads: number;
+  consumedDownloads: number;
+  activeReservations: number;
+  isActive: boolean;
 }
 
 interface ReservationRow {
@@ -56,7 +71,7 @@ export async function reserveDownload(
     await client.query("BEGIN");
     const linkResult = await client.query<DownloadLinkRow>(
       `SELECT id, document_id, max_downloads, consumed_downloads,
-              active_reservations, is_active
+              active_reservations, is_active, published_revision, published_at
        FROM download_links
        WHERE public_token = $1
        FOR UPDATE`,
@@ -92,18 +107,17 @@ export async function reserveDownload(
       throw new HttpError(409, "Download availability is temporarily reserved.");
     }
 
-    const stateResult = await client.query<{ revision: number }>(
-      `SELECT revision
-       FROM document_states
-       WHERE document_id = $1
-       FOR SHARE`,
-      [link.document_id]
-    );
-    const state = stateResult.rows[0];
-    if (!state) {
-      throw new HttpError(404, "Document not found.");
+    let revision = link.published_revision;
+    if (revision === null) {
+      const stateResult = await client.query<{ revision: number }>(
+        `SELECT revision FROM document_states WHERE document_id = $1 FOR SHARE`,
+        [link.document_id]
+      );
+      const state = stateResult.rows[0];
+      if (!state) throw new HttpError(404, "Document not found.");
+      revision = state.revision;
     }
-    await ensureDocumentVersionInTransaction(client, link.document_id, state.revision);
+    await ensureDocumentVersionInTransaction(client, link.document_id, revision);
 
     const reservationId = randomUUID();
     const insertedReservation = await client.query<{ expires_at: Date }>(
@@ -111,7 +125,7 @@ export async function reserveDownload(
          id, link_id, idempotency_key, reserved_revision, status, expires_at
        ) VALUES ($1, $2, $3, $4, 'reserved', clock_timestamp() + $5 * INTERVAL '1 second')
        RETURNING expires_at`,
-      [reservationId, link.id, idempotencyKey, state.revision, reservationTtlSeconds()]
+      [reservationId, link.id, idempotencyKey, revision, reservationTtlSeconds()]
     );
     const updatedLink = await client.query(
       `UPDATE download_links
@@ -129,7 +143,7 @@ export async function reserveDownload(
     return {
       id: reservationId,
       documentId: link.document_id,
-      revision: state.revision,
+      revision,
       status: "reserved",
       expiresAt: insertedReservation.rows[0].expires_at.toISOString()
     };
@@ -139,6 +153,172 @@ export async function reserveDownload(
   } finally {
     client.release();
   }
+}
+
+function toPublication(row: PublicationRow): Publication {
+  return {
+    documentId: row.document_id,
+    publicToken: row.public_token,
+    title: row.title,
+    author: row.author,
+    publishedAt: row.published_at.toISOString(),
+    revision: row.published_revision,
+    maxDownloads: row.max_downloads,
+    consumedDownloads: row.consumed_downloads,
+    activeReservations: row.active_reservations,
+    isActive: row.is_active
+  };
+}
+
+interface PublicationRow {
+  document_id: string;
+  public_token: string;
+  title: string;
+  author: string;
+  published_at: Date;
+  published_revision: number;
+  max_downloads: number;
+  consumed_downloads: number;
+  active_reservations: number;
+  is_active: boolean;
+}
+
+export async function capturePublicationRevision(ownerId: string, documentId: string): Promise<number> {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const owner = await client.query(
+      `SELECT 1 FROM document_editors WHERE document_id = $1 AND editor_id = $2 AND role = 'owner'`,
+      [documentId, ownerId]
+    );
+    if (owner.rowCount === 0) {
+      const exists = await client.query("SELECT 1 FROM documents WHERE id = $1", [documentId]);
+      throw new HttpError(exists.rowCount === 0 ? 404 : 403, "Document access denied.");
+    }
+    const state = await client.query<{ revision: number }>(
+      "SELECT revision FROM document_states WHERE document_id = $1 FOR SHARE",
+      [documentId]
+    );
+    if (!state.rows[0]) throw new HttpError(404, "Document not found.");
+    await ensureDocumentVersionInTransaction(client, documentId, state.rows[0].revision);
+    await client.query("COMMIT");
+    return state.rows[0].revision;
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+export async function createPublication(
+  ownerId: string,
+  documentId: string,
+  revision: number,
+  maxDownloads: number
+): Promise<Publication> {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const owner = await client.query(
+      `SELECT 1 FROM document_editors WHERE document_id = $1 AND editor_id = $2 AND role = 'owner'`,
+      [documentId, ownerId]
+    );
+    if (owner.rowCount === 0) throw new HttpError(403, "Document access denied.");
+    const created = await client.query<PublicationRow>(
+      `WITH inserted AS (
+         INSERT INTO download_links (id, document_id, public_token, max_downloads, published_revision, published_at)
+         VALUES ($1, $2, $3, $4, $5, clock_timestamp())
+         ON CONFLICT (document_id) DO NOTHING
+         RETURNING document_id, public_token, max_downloads, consumed_downloads, active_reservations, is_active, published_revision, published_at
+       )
+       SELECT inserted.*, documents.title, editors.name AS author
+       FROM inserted
+       INNER JOIN documents ON documents.id = inserted.document_id
+       INNER JOIN document_editors ownership ON ownership.document_id = documents.id AND ownership.role = 'owner'
+       INNER JOIN editors ON editors.id = ownership.editor_id`,
+      [randomUUID(), documentId, randomBytes(32).toString("base64url"), maxDownloads, revision]
+    );
+    if (!created.rows[0]) throw new HttpError(409, "A publication already exists for this document.");
+    await client.query("UPDATE documents SET published_at = $2 WHERE id = $1", [documentId, created.rows[0].published_at]);
+    await client.query("COMMIT");
+    return toPublication(created.rows[0]);
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+const publicationFields = `download_links.document_id, download_links.public_token, documents.title,
+  editors.name AS author, download_links.published_at, download_links.published_revision,
+  download_links.max_downloads, download_links.consumed_downloads, download_links.active_reservations,
+  download_links.is_active`;
+
+export async function listPublications(): Promise<Publication[]> {
+  const result = await pool.query<PublicationRow>(
+    `SELECT ${publicationFields} FROM download_links
+     INNER JOIN documents ON documents.id = download_links.document_id
+     INNER JOIN document_editors ownership ON ownership.document_id = documents.id AND ownership.role = 'owner'
+     INNER JOIN editors ON editors.id = ownership.editor_id
+     WHERE download_links.is_active AND download_links.published_at IS NOT NULL
+     ORDER BY download_links.published_at DESC, download_links.document_id`
+  );
+  return result.rows.map(toPublication);
+}
+
+export async function getPublication(publicToken: string): Promise<Publication> {
+  const result = await pool.query<PublicationRow>(
+    `SELECT ${publicationFields} FROM download_links
+     INNER JOIN documents ON documents.id = download_links.document_id
+     INNER JOIN document_editors ownership ON ownership.document_id = documents.id AND ownership.role = 'owner'
+     INNER JOIN editors ON editors.id = ownership.editor_id
+     WHERE download_links.public_token = $1 AND download_links.is_active AND download_links.published_at IS NOT NULL`,
+    [publicToken]
+  );
+  if (!result.rows[0]) throw new HttpError(404, "Publication not found.");
+  return toPublication(result.rows[0]);
+}
+
+export async function updatePublicationQuota(ownerId: string, documentId: string, maxDownloads: number): Promise<Publication> {
+  if (!Number.isInteger(maxDownloads) || maxDownloads <= 0) throw new HttpError(400, "maxDownloads is invalid.");
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const result = await client.query<PublicationRow>(
+      `UPDATE download_links SET max_downloads = $3
+       WHERE document_id = $1 AND EXISTS (
+         SELECT 1 FROM document_editors WHERE document_id = $1 AND editor_id = $2 AND role = 'owner'
+       ) AND $3 >= consumed_downloads + active_reservations
+       RETURNING document_id, public_token, max_downloads, consumed_downloads, active_reservations, is_active, published_revision, published_at`,
+      [documentId, ownerId, maxDownloads]
+    );
+    const row = result.rows[0];
+    if (!row) throw new HttpError(409, "Quota cannot be lower than delivered or reserved downloads.");
+    const details = await client.query<Pick<PublicationRow, "title" | "author">>(
+      `SELECT documents.title, editors.name AS author FROM documents
+       INNER JOIN document_editors ownership ON ownership.document_id = documents.id AND ownership.role = 'owner'
+       INNER JOIN editors ON editors.id = ownership.editor_id WHERE documents.id = $1`, [documentId]
+    );
+    await client.query("COMMIT");
+    return toPublication({ ...row, ...details.rows[0] });
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally { client.release(); }
+}
+
+export async function withdrawPublication(ownerId: string, documentId: string): Promise<void> {
+  const result = await pool.query(
+    `UPDATE download_links SET is_active = FALSE
+     WHERE document_id = $1 AND is_active AND EXISTS (
+       SELECT 1 FROM document_editors WHERE document_id = $1 AND editor_id = $2 AND role = 'owner'
+     )`,
+    [documentId, ownerId]
+  );
+  if (result.rowCount !== 1) throw new HttpError(404, "Publication not found.");
+  await pool.query("UPDATE documents SET published_at = NULL WHERE id = $1", [documentId]);
 }
 
 function reservationTtlSeconds(): number {

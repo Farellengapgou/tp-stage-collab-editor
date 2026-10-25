@@ -11,6 +11,7 @@ button, input, textarea { font: inherit; }
 button { cursor: pointer; }
 
 .site-header { min-height: 72px; padding: 0 5vw; display: flex; justify-content: space-between; align-items: center; gap: 24px; background: #fff; border-bottom: 1px solid #dce3e7; }
+.site-header nav { margin-left: auto; }.journal-link { border: 0; background: transparent; color: #245276; font-weight: 700; }
 .brand { border: 0; padding: 0; background: transparent; color: #173b5c; font-weight: 750; font-size: 1.2rem; }
 .editor-identity { display: grid; justify-items: end; gap: 2px; font-size: .85rem; }
 .editor-identity span { color: #62717d; }
@@ -24,6 +25,7 @@ h2 { font-size: 1.1rem; }
 .documents-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(290px, 360px); gap: 32px; align-items: start; }
 .document-list { display: grid; gap: 12px; }
 .document-card { width: 100%; padding: 20px; display: grid; gap: 7px; text-align: left; color: inherit; background: #fff; border: 1px solid #dce3e7; border-radius: 10px; transition: border-color .15s, box-shadow .15s; }
+.publication-card { padding: 22px; background: #fff; border: 1px solid #dce3e7; border-radius: 10px; }.publication-card h2 { margin-bottom: 8px; }.publication-card p { color: #62717d; }.journal-page { max-width: 760px; }
 .document-card:hover, .document-card:focus-visible { border-color: #386487; box-shadow: 0 3px 12px #183b5c16; outline: none; }
 .document-card-title { font-weight: 700; font-size: 1.05rem; }
 .document-card-description, .document-card-meta, .optional { color: #62717d; font-size: .9rem; }

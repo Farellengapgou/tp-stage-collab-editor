@@ -3,7 +3,8 @@ import {
   type DocumentEditor,
   type DocumentSummary,
   type Editor,
-  type HistoryEntry
+  type HistoryEntry,
+  type Publication
 } from "./types";
 
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
@@ -25,6 +26,51 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   }
 
   return response.json() as Promise<T>;
+}
+
+export async function publishDocument(documentId: string, maxDownloads: number): Promise<{ publication?: Publication; status?: string; revision: number }> {
+  return request(`/documents/${documentId}/publication`, { method: "POST", body: JSON.stringify({ maxDownloads }) });
+}
+
+export async function listPublications(): Promise<Publication[]> {
+  return (await request<{ publications: Publication[] }>("/journal")).publications;
+}
+
+export async function getPublication(token: string): Promise<Publication> {
+  return (await request<{ publication: Publication }>(`/journal/${token}`)).publication;
+}
+
+export async function downloadPublication(token: string): Promise<Blob> {
+  const idempotencyKey = crypto.randomUUID();
+  for (let attempt = 0; attempt < 12; attempt++) {
+    const response = await fetch(`/api/downloads/${token}`, {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ idempotencyKey })
+    });
+    if (response.status === 202) {
+      if (attempt === 11) throw new ApiError("Le PDF est toujours en préparation. Réessayez plus tard.", 202);
+      await new Promise(resolve => window.setTimeout(resolve, 500));
+      continue;
+    }
+    if (!response.ok) {
+      const body = await response.json().catch(() => null) as { status?: string; error?: string } | null;
+      throw new ApiError(body?.status === "exhausted" ? "Quota atteint" : body?.error ?? "Téléchargement indisponible.", response.status);
+    }
+    if (!response.headers.get("content-type")?.includes("application/pdf")) {
+      throw new ApiError("Le serveur n’a pas livré de PDF.", response.status);
+    }
+    return response.blob();
+  }
+  throw new ApiError("Le PDF est toujours en préparation.", 202);
+}
+
+export async function diagnosticPdf(path: string, options: RequestInit = {}): Promise<{ blob: Blob; status: number; contentType: string }> {
+  const response = await fetch(`/api${path}`, { ...options, credentials: "include", headers: options.body ? { "Content-Type": "application/json" } : undefined });
+  const contentType = response.headers.get("content-type") ?? "";
+  if (!response.ok || !contentType.includes("application/pdf")) throw new ApiError(await response.text(), response.status);
+  return { blob: await response.blob(), status: response.status, contentType };
 }
 
 export async function identify(displayName: string, email: string): Promise<Editor> {
