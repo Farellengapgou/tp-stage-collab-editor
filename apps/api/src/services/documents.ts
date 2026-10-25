@@ -235,6 +235,13 @@ export async function getDocumentRevision(
   revision: number
 ): Promise<DocumentRevision> {
   await getDocument(editorId, documentId);
+  return reconstructDocumentRevision(documentId, revision);
+}
+
+export async function reconstructDocumentRevision(
+  documentId: string,
+  revision: number
+): Promise<DocumentRevision> {
   const current = await getCurrentDocumentState(documentId);
   if (revision > current.revision) {
     throw new HttpError(404, "Document revision not found.");
