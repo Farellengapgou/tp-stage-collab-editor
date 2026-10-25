@@ -1,11 +1,16 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { test } from "node:test";
+import { PutObjectCommand } from "@aws-sdk/client-s3";
 import { pool } from "../../src/db.js";
 import { createCollaborationBackend } from "../../src/services/collaboration.js";
 import { createDocument } from "../../src/services/documents.js";
 import { findOrCreateEditor } from "../../src/services/editors.js";
-import { generateDocumentPdf } from "../../src/services/pdf.js";
+import {
+  generateDocumentPdf,
+  prepareDocumentPdf,
+  type PdfStorageClient
+} from "../../src/services/pdf.js";
 
 function submit(
   backend: ReturnType<typeof createCollaborationBackend>,
@@ -66,6 +71,88 @@ test("PDF generation reconstructs immutable document revisions", async () => {
       [document.id]
     );
     assert.deepEqual(quota.rows[0], { consumed_downloads: 0, active_reservations: 0 });
+
+    const uploads: Array<{ Bucket?: string; Key?: string; Body?: unknown }> = [];
+    const storage: PdfStorageClient = {
+      async send(command: PutObjectCommand): Promise<unknown> {
+        uploads.push(command.input);
+        return {};
+      }
+    };
+    const prepared = await prepareDocumentPdf(document.id, 1, {
+      bucket: "test-private-pdfs",
+      storage
+    });
+    const reused = await prepareDocumentPdf(document.id, 1, {
+      bucket: "test-private-pdfs",
+      storage
+    });
+    assert.deepEqual(prepared, reused);
+    assert.equal(prepared.status, "ready");
+    assert.equal(uploads.length, 1);
+    assert.equal(uploads[0].Bucket, "test-private-pdfs");
+    assert.equal(uploads[0].Key, `documents/${document.id}/revisions/1.pdf`);
+    assert.ok(uploads[0].Body instanceof Buffer);
+    assert.equal((uploads[0].Body as Buffer).subarray(0, 5).toString(), "%PDF-");
+
+    const failed = await prepareDocumentPdf(document.id, 2, {
+      bucket: "test-private-pdfs",
+      storage: {
+        async send(): Promise<unknown> {
+          throw new Error("simulated S3 failure");
+        }
+      }
+    });
+    assert.equal(failed.status, "failed");
+
+    let signalUploadStarted: () => void = () => {};
+    const uploadStarted = new Promise<void>((resolve) => {
+      signalUploadStarted = resolve;
+    });
+    let releaseUpload: () => void = () => {};
+    const uploadReleased = new Promise<void>((resolve) => {
+      releaseUpload = resolve;
+    });
+    const delayedStorage: PdfStorageClient = {
+      async send(): Promise<unknown> {
+        signalUploadStarted();
+        await uploadReleased;
+        return {};
+      }
+    };
+    const preparing = prepareDocumentPdf(document.id, 3, {
+      bucket: "test-private-pdfs",
+      storage: delayedStorage
+    });
+    await uploadStarted;
+    const concurrent = await prepareDocumentPdf(document.id, 3, {
+      bucket: "test-private-pdfs",
+      storage: delayedStorage
+    });
+    assert.equal(concurrent.status, "preparing");
+    releaseUpload();
+    assert.equal((await preparing).status, "ready");
+
+    const artifacts = await pool.query<{
+      revision: number;
+      status: string;
+      generated_at: Date | null;
+    }>(
+      `SELECT revision, status, generated_at
+       FROM pdf_artifacts
+       WHERE document_id = $1
+       ORDER BY revision`,
+      [document.id]
+    );
+    assert.deepEqual(artifacts.rows.map((artifact) => ({
+      revision: artifact.revision,
+      status: artifact.status,
+      generated: artifact.generated_at instanceof Date
+    })), [
+      { revision: 1, status: "ready", generated: true },
+      { revision: 2, status: "failed", generated: false },
+      { revision: 3, status: "ready", generated: true }
+    ]);
   } finally {
     await closeBackend(backend);
     await pool.end();
