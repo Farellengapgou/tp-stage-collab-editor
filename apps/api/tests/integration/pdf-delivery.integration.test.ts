@@ -62,6 +62,145 @@ function cookie(token: string): string {
   return `collab_session=${token}`;
 }
 
+test("PDF delivery permits exactly three isolated downloads and leaves no active reservation", async () => {
+  const storage = new MemoryPdfStorage();
+  const app = buildApp({ pdfBucket: "test-private-pdfs", pdfStorage: storage });
+  const suffix = randomUUID();
+  const owner = await findOrCreateEditor("PDF quota owner", `pdf-quota-${suffix}@example.test`);
+  const ownerSession = await createSession(owner.id);
+  const document = await createDocument(owner.id, "PDF quota", "");
+
+  try {
+    const linkResponse = await app.inject({
+      method: "POST",
+      url: `/documents/${document.id}/download-link`,
+      headers: { cookie: cookie(ownerSession.token) },
+      payload: { maxDownloads: 3 }
+    });
+    assert.equal(linkResponse.statusCode, 201);
+    const publicToken = (linkResponse.json().link as { publicToken: string }).publicToken;
+
+    for (const idempotencyKey of ["quota-one", "quota-two", "quota-three"]) {
+      const delivery = await app.inject({
+        method: "POST",
+        url: `/downloads/${publicToken}`,
+        payload: { idempotencyKey }
+      });
+      assert.equal(delivery.statusCode, 200);
+      assert.equal(delivery.headers["content-type"], "application/pdf");
+      assert.equal(delivery.body.slice(0, 5), "%PDF-");
+    }
+
+    const refused = await app.inject({
+      method: "POST",
+      url: `/downloads/${publicToken}`,
+      payload: { idempotencyKey: "quota-four" }
+    });
+    assert.equal(refused.statusCode, 410);
+    assert.deepEqual(refused.json(), { status: "exhausted" });
+
+    const counters = await pool.query<{ consumed_downloads: number; active_reservations: number }>(
+      `SELECT consumed_downloads, active_reservations
+       FROM download_links WHERE public_token = $1`,
+      [publicToken]
+    );
+    assert.deepEqual(counters.rows[0], { consumed_downloads: 3, active_reservations: 0 });
+  } finally {
+    await app.close();
+  }
+});
+
+test("a publication link delivers the latest durable revision without changing its quota", async () => {
+  const storage = new MemoryPdfStorage();
+  const app = buildApp({ pdfBucket: "test-private-pdfs", pdfStorage: storage });
+  const writer = createCollaborationBackend();
+  const suffix = randomUUID();
+  const owner = await findOrCreateEditor("PDF revision owner", `pdf-revision-${suffix}@example.test`);
+  const ownerSession = await createSession(owner.id);
+  const document = await createDocument(owner.id, "PDF current revision", "");
+
+  try {
+    await submit(writer, owner.id, document.id, "first", 0, ["Version N"]);
+    const publicationResponse = await app.inject({
+      method: "POST",
+      url: `/documents/${document.id}/publication`,
+      headers: { cookie: cookie(ownerSession.token) },
+      payload: { maxDownloads: 3 }
+    });
+    assert.equal(publicationResponse.statusCode, 201);
+    const publicToken = (publicationResponse.json().publication as { publicToken: string }).publicToken;
+
+    const firstDelivery = await app.inject({
+      method: "POST",
+      url: `/downloads/${publicToken}`,
+      payload: { idempotencyKey: "revision-n" }
+    });
+    assert.equal(firstDelivery.statusCode, 200);
+    assert.equal(firstDelivery.body.slice(0, 5), "%PDF-");
+    assert.ok(storage.objects.has(`documents/${document.id}/revisions/1.pdf`));
+
+    await submit(writer, owner.id, document.id, "second", 1, [9, " plus récente"]);
+    const state = await pool.query<{ revision: number; content: string }>(
+      "SELECT revision, content FROM document_states WHERE document_id = $1",
+      [document.id]
+    );
+    assert.deepEqual(state.rows[0], { revision: 2, content: "Version N plus récente" });
+
+    const secondDelivery = await app.inject({
+      method: "POST",
+      url: `/downloads/${publicToken}`,
+      payload: { idempotencyKey: "revision-n-plus-one" }
+    });
+    assert.equal(secondDelivery.statusCode, 200);
+    assert.equal(secondDelivery.body.slice(0, 5), "%PDF-");
+    assert.ok(storage.objects.has(`documents/${document.id}/revisions/2.pdf`));
+    assert.notDeepEqual(secondDelivery.rawPayload, firstDelivery.rawPayload);
+
+    const currentLength = Array.from("Version N plus récente").length;
+    await Promise.all([
+      submit(writer, owner.id, document.id, "concurrent-a", 2, [currentLength, " A"]),
+      submit(writer, owner.id, document.id, "concurrent-b", 2, [currentLength, " B"])
+    ]);
+    const concurrentState = await pool.query<{ revision: number; content: string }>(
+      "SELECT revision, content FROM document_states WHERE document_id = $1",
+      [document.id]
+    );
+    assert.equal(concurrentState.rows[0].revision, 4);
+    assert.match(concurrentState.rows[0].content, / A/);
+    assert.match(concurrentState.rows[0].content, / B/);
+
+    const thirdDelivery = await app.inject({
+      method: "POST",
+      url: `/downloads/${publicToken}`,
+      payload: { idempotencyKey: "revision-n-plus-two" }
+    });
+    assert.equal(thirdDelivery.statusCode, 200);
+    assert.ok(storage.objects.has(`documents/${document.id}/revisions/4.pdf`));
+
+    const fourthDelivery = await app.inject({
+      method: "POST",
+      url: `/downloads/${publicToken}`,
+      payload: { idempotencyKey: "revision-n-plus-three" }
+    });
+    assert.equal(fourthDelivery.statusCode, 410);
+    assert.deepEqual(fourthDelivery.json(), { status: "exhausted" });
+
+    const counters = await pool.query<{ consumed_downloads: number; active_reservations: number; published_revision: number }>(
+      `SELECT consumed_downloads, active_reservations, published_revision
+       FROM download_links WHERE public_token = $1`,
+      [publicToken]
+    );
+    assert.deepEqual(counters.rows[0], {
+      consumed_downloads: 3,
+      active_reservations: 0,
+      published_revision: 1
+    });
+  } finally {
+    await app.close();
+    await closeBackend(writer);
+  }
+});
+
 test("PDF delivery reserves, captures and consumes downloads", async () => {
   const storage = new MemoryPdfStorage();
   const app = buildApp({ pdfBucket: "test-private-pdfs", pdfStorage: storage });

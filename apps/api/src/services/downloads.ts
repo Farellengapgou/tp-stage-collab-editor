@@ -107,16 +107,13 @@ export async function reserveDownload(
       throw new HttpError(409, "Download availability is temporarily reserved.");
     }
 
-    let revision = link.published_revision;
-    if (revision === null) {
-      const stateResult = await client.query<{ revision: number }>(
-        `SELECT revision FROM document_states WHERE document_id = $1 FOR SHARE`,
-        [link.document_id]
-      );
-      const state = stateResult.rows[0];
-      if (!state) throw new HttpError(404, "Document not found.");
-      revision = state.revision;
-    }
+    const stateResult = await client.query<{ revision: number }>(
+      `SELECT revision FROM document_states WHERE document_id = $1 FOR SHARE`,
+      [link.document_id]
+    );
+    const state = stateResult.rows[0];
+    if (!state) throw new HttpError(404, "Document not found.");
+    const revision = state.revision;
     await ensureDocumentVersionInTransaction(client, link.document_id, revision);
 
     const reservationId = randomUUID();
