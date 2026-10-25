@@ -10,10 +10,6 @@ import {
 } from "../../src/services/downloads.js";
 import { findOrCreateEditor } from "../../src/services/editors.js";
 
-function futureExpiration(): Date {
-  return new Date(Date.now() + 60_000);
-}
-
 async function createLink(maxDownloads: number, isActive = true): Promise<{
   documentId: string;
   publicToken: string;
@@ -38,12 +34,12 @@ function isHttpError(statusCode: number) {
 test("download reservations are transactional and idempotent", async (t) => {
   await t.test("replays the same reservation after the quota is full", async () => {
     const link = await createLink(1);
-    const first = await reserveDownload(link.publicToken, "attempt-one", futureExpiration());
-    const replay = await reserveDownload(link.publicToken, "attempt-one", futureExpiration());
+    const first = await reserveDownload(link.publicToken, "attempt-one");
+    const replay = await reserveDownload(link.publicToken, "attempt-one");
     assert.deepEqual(replay, first);
     await assert.rejects(
-      reserveDownload(link.publicToken, "attempt-two", futureExpiration()),
-      isHttpError(410)
+      reserveDownload(link.publicToken, "attempt-two"),
+      isHttpError(409)
     );
 
     const rows = await pool.query<{
@@ -68,10 +64,23 @@ test("download reservations are transactional and idempotent", async (t) => {
     assert.equal(version.rows[0].snapshot_reference, `edit_operations:${link.documentId}:0`);
   });
 
+  await t.test("uses PostgreSQL time and the default five minute TTL", async () => {
+    const link = await createLink(1);
+    const reservation = await reserveDownload(link.publicToken, "default-ttl");
+    const ttl = await pool.query<{ remaining_seconds: number }>(
+      `SELECT EXTRACT(EPOCH FROM expires_at - clock_timestamp())::integer AS remaining_seconds
+       FROM download_reservations
+       WHERE id = $1`,
+      [reservation.id]
+    );
+    assert.ok(ttl.rows[0].remaining_seconds >= 299);
+    assert.ok(ttl.rows[0].remaining_seconds <= 300);
+  });
+
   await t.test("refuses an inactive link", async () => {
     const link = await createLink(1, false);
     await assert.rejects(
-      reserveDownload(link.publicToken, "inactive-attempt", futureExpiration()),
+      reserveDownload(link.publicToken, "inactive-attempt"),
       isHttpError(410)
     );
     const count = await pool.query<{ count: number }>(
@@ -86,7 +95,7 @@ test("download reservations are transactional and idempotent", async (t) => {
 
   await t.test("reclaims an expired reservation before checking the quota", async () => {
     const link = await createLink(1);
-    const expiredReservation = await reserveDownload(link.publicToken, "expired-attempt", futureExpiration());
+    const expiredReservation = await reserveDownload(link.publicToken, "expired-attempt");
     await pool.query(
       `UPDATE download_reservations
        SET created_at = clock_timestamp() - INTERVAL '2 minutes',
@@ -95,7 +104,7 @@ test("download reservations are transactional and idempotent", async (t) => {
       [expiredReservation.id]
     );
 
-    const replacement = await reserveDownload(link.publicToken, "replacement-attempt", futureExpiration());
+    const replacement = await reserveDownload(link.publicToken, "replacement-attempt");
     assert.notEqual(replacement.id, expiredReservation.id);
     const rows = await pool.query<{
       active_reservations: number;
@@ -117,7 +126,7 @@ test("download reservations are transactional and idempotent", async (t) => {
 
   await t.test("confirms a reservation only once", async () => {
     const link = await createLink(1);
-    const reservation = await reserveDownload(link.publicToken, "confirm-once", futureExpiration());
+    const reservation = await reserveDownload(link.publicToken, "confirm-once");
     const delivered = await confirmDownloadReservation(reservation.id);
     const replay = await confirmDownloadReservation(reservation.id);
     assert.equal(delivered.status, "delivered");
@@ -134,7 +143,7 @@ test("download reservations are transactional and idempotent", async (t) => {
 
   await t.test("expires a reservation only once without consumption", async () => {
     const link = await createLink(1);
-    const reservation = await reserveDownload(link.publicToken, "expire-once", futureExpiration());
+    const reservation = await reserveDownload(link.publicToken, "expire-once");
     await pool.query(
       `UPDATE download_reservations
        SET created_at = clock_timestamp() - INTERVAL '2 minutes',
@@ -158,7 +167,7 @@ test("download reservations are transactional and idempotent", async (t) => {
 
   await t.test("resolves concurrent confirmation and expiration once", async () => {
     const link = await createLink(1);
-    const reservation = await reserveDownload(link.publicToken, "transition-race", futureExpiration());
+    const reservation = await reserveDownload(link.publicToken, "transition-race");
     await pool.query(
       `UPDATE download_reservations
        SET created_at = clock_timestamp() - INTERVAL '2 minutes',
@@ -195,7 +204,7 @@ test("download reservations are transactional and idempotent", async (t) => {
     const link = await createLink(1);
     const attempts = await Promise.allSettled(
       Array.from({ length: 50 }, (_, index) =>
-        reserveDownload(link.publicToken, `concurrent-${index}`, futureExpiration())
+        reserveDownload(link.publicToken, `concurrent-${index}`)
       )
     );
     assert.equal(attempts.filter((attempt) => attempt.status === "fulfilled").length, 1);

@@ -1,8 +1,10 @@
-import Fastify from "fastify";
+import Fastify, { LogController } from "fastify";
 import { registerDocumentRoutes } from "./routes/documents.js";
 import { registerEditorRoutes } from "./routes/editors.js";
+import { registerDownloadRoutes } from "./routes/downloads.js";
 import { HttpError } from "./services/errors.js";
 import { installCollaboration } from "./services/collaboration.js";
+import type { PdfStorageClient } from "./services/pdf.js";
 
 declare module "fastify" {
   interface FastifyInstance {
@@ -10,8 +12,11 @@ declare module "fastify" {
   }
 }
 
-export function buildApp() {
-  const app = Fastify({ logger: true });
+export function buildApp(options: { pdfBucket?: string; pdfStorage?: PdfStorageClient } = {}) {
+  const app = Fastify({
+    logger: true,
+    logController: new LogController({ disableRequestLogging: true })
+  });
   app.decorate("collaborationBackend", null);
 
   app.get("/health", async () => {
@@ -20,6 +25,7 @@ export function buildApp() {
 
   registerEditorRoutes(app);
   registerDocumentRoutes(app);
+  registerDownloadRoutes(app, { bucket: options.pdfBucket, storage: options.pdfStorage });
   installCollaboration(app);
 
   app.setErrorHandler((error, _request, reply) => {

@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
+import { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
-import { PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import { GetObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import PDFDocument from "pdfkit";
 import { pool } from "../db.js";
 import { ensureDocumentVersionInTransaction } from "./documents.js";
@@ -24,7 +25,7 @@ interface PdfArtifactRow {
 }
 
 export interface PdfStorageClient {
-  send(command: PutObjectCommand): Promise<unknown>;
+  send(command: PutObjectCommand | GetObjectCommand): Promise<unknown>;
 }
 
 export interface PreparedDocumentPdf {
@@ -159,4 +160,18 @@ export async function prepareDocumentPdf(
     await setPdfArtifactStatus(artifact.id, "failed");
     return { revision, objectKey: artifact.s3_object_key, status: "failed" };
   }
+}
+
+export async function getPreparedDocumentPdf(
+  objectKey: string,
+  options: PrepareDocumentPdfOptions = {}
+): Promise<Readable> {
+  const result = await (options.storage ?? s3Client).send(new GetObjectCommand({
+    Bucket: pdfBucket(options.bucket ?? process.env.PDF_S3_BUCKET),
+    Key: objectKey
+  })) as { Body?: unknown };
+  if (!(result.Body instanceof Readable)) {
+    throw new Error("PDF object body is unavailable.");
+  }
+  return result.Body;
 }

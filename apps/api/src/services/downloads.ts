@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import type { PoolClient } from "pg";
 import { pool } from "../db.js";
 import { ensureDocumentVersionInTransaction } from "./documents.js";
@@ -27,14 +27,16 @@ interface LockedReservation {
 
 export interface DownloadReservation {
   id: string;
+  documentId: string;
   revision: number;
   status: ReservationRow["status"];
   expiresAt: string;
 }
 
-function toReservation(reservation: ReservationRow): DownloadReservation {
+function toReservation(reservation: ReservationRow, documentId: string): DownloadReservation {
   return {
     id: reservation.id,
+    documentId,
     revision: reservation.reserved_revision,
     status: reservation.status,
     expiresAt: reservation.expires_at.toISOString()
@@ -43,16 +45,9 @@ function toReservation(reservation: ReservationRow): DownloadReservation {
 
 export async function reserveDownload(
   publicToken: string,
-  idempotencyKey: string,
-  expiresAt: Date
+  idempotencyKey: string
 ): Promise<DownloadReservation> {
-  const expirationTime = expiresAt.getTime();
-  if (
-    !publicToken.trim() ||
-    !idempotencyKey.trim() ||
-    !Number.isFinite(expirationTime) ||
-    expirationTime <= Date.now()
-  ) {
+  if (!publicToken.trim() || !idempotencyKey.trim() || idempotencyKey.length > 255) {
     throw new HttpError(400, "Invalid download reservation.");
   }
 
@@ -87,11 +82,14 @@ export async function reserveDownload(
     const existing = existingResult.rows[0];
     if (existing) {
       await client.query("COMMIT");
-      return toReservation(existing);
+      return toReservation(existing, link.document_id);
     }
 
-    if (link.consumed_downloads + link.active_reservations >= link.max_downloads) {
+    if (link.consumed_downloads >= link.max_downloads) {
       throw new HttpError(410, "Download quota exhausted.");
+    }
+    if (link.consumed_downloads + link.active_reservations >= link.max_downloads) {
+      throw new HttpError(409, "Download availability is temporarily reserved.");
     }
 
     const stateResult = await client.query<{ revision: number }>(
@@ -108,11 +106,12 @@ export async function reserveDownload(
     await ensureDocumentVersionInTransaction(client, link.document_id, state.revision);
 
     const reservationId = randomUUID();
-    await client.query(
+    const insertedReservation = await client.query<{ expires_at: Date }>(
       `INSERT INTO download_reservations (
          id, link_id, idempotency_key, reserved_revision, status, expires_at
-       ) VALUES ($1, $2, $3, $4, 'reserved', $5)`,
-      [reservationId, link.id, idempotencyKey, state.revision, expiresAt]
+       ) VALUES ($1, $2, $3, $4, 'reserved', clock_timestamp() + $5 * INTERVAL '1 second')
+       RETURNING expires_at`,
+      [reservationId, link.id, idempotencyKey, state.revision, reservationTtlSeconds()]
     );
     const updatedLink = await client.query(
       `UPDATE download_links
@@ -129,10 +128,62 @@ export async function reserveDownload(
     await client.query("COMMIT");
     return {
       id: reservationId,
+      documentId: link.document_id,
       revision: state.revision,
       status: "reserved",
-      expiresAt: expiresAt.toISOString()
+      expiresAt: insertedReservation.rows[0].expires_at.toISOString()
     };
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+function reservationTtlSeconds(): number {
+  const value = process.env.DOWNLOAD_RESERVATION_TTL_SECONDS;
+  if (value === undefined) return 300;
+  const seconds = Number(value);
+  if (!Number.isInteger(seconds) || seconds <= 0) {
+    throw new Error("DOWNLOAD_RESERVATION_TTL_SECONDS must be a positive integer.");
+  }
+  return seconds;
+}
+
+export async function createDownloadLink(
+  ownerId: string,
+  documentId: string,
+  maxDownloads: number
+): Promise<{ publicToken: string; maxDownloads: number }> {
+  if (!Number.isInteger(maxDownloads) || maxDownloads <= 0 || maxDownloads > 2_147_483_647) {
+    throw new HttpError(400, "maxDownloads is invalid.");
+  }
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const owner = await client.query(
+      `SELECT 1 FROM document_editors
+       WHERE document_id = $1 AND editor_id = $2 AND role = 'owner'`,
+      [documentId, ownerId]
+    );
+    if (owner.rowCount === 0) {
+      const exists = await client.query("SELECT 1 FROM documents WHERE id = $1", [documentId]);
+      throw new HttpError(exists.rowCount === 0 ? 404 : 403, "Document access denied.");
+    }
+    const publicToken = randomBytes(32).toString("base64url");
+    const created = await client.query(
+      `INSERT INTO download_links (id, document_id, public_token, max_downloads)
+       VALUES ($1, $2, $3, $4)
+       ON CONFLICT (document_id) DO NOTHING
+       RETURNING id`,
+      [randomUUID(), documentId, publicToken, maxDownloads]
+    );
+    if (created.rowCount !== 1) {
+      throw new HttpError(409, "A download link already exists for this document.");
+    }
+    await client.query("COMMIT");
+    return { publicToken, maxDownloads };
   } catch (error) {
     await client.query("ROLLBACK");
     throw error;
@@ -243,7 +294,7 @@ async function releaseExpiredReservation(
     throw new Error("Invalid download reservation counters.");
   }
 
-  return { ...toReservation(reservation), status: "expired" };
+  return { ...toReservation(reservation, link.document_id), status: "expired" };
 }
 
 async function currentTimestamp(
@@ -264,7 +315,7 @@ export async function confirmDownloadReservation(
     const { link, reservation } = await lockReservation(client, reservationId);
     if (reservation.status !== "reserved") {
       await client.query("COMMIT");
-      return toReservation(reservation);
+      return toReservation(reservation, link.document_id);
     }
 
     const now = await currentTimestamp(client);
@@ -293,7 +344,7 @@ export async function confirmDownloadReservation(
     }
 
     await client.query("COMMIT");
-    return { ...toReservation(reservation), status: "delivered" };
+    return { ...toReservation(reservation, link.document_id), status: "delivered" };
   } catch (error) {
     await client.query("ROLLBACK");
     throw error;
@@ -311,18 +362,49 @@ export async function expireDownloadReservation(
     const { link, reservation } = await lockReservation(client, reservationId);
     if (reservation.status !== "reserved") {
       await client.query("COMMIT");
-      return toReservation(reservation);
+      return toReservation(reservation, link.document_id);
     }
 
     const now = await currentTimestamp(client);
     if (reservation.expires_at > now) {
       await client.query("COMMIT");
-      return toReservation(reservation);
+      return toReservation(reservation, link.document_id);
     }
 
     const expired = await releaseExpiredReservation(client, link, reservation);
     await client.query("COMMIT");
     return expired;
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+export async function failDownloadReservation(
+  reservationId: string
+): Promise<DownloadReservation> {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const { link, reservation } = await lockReservation(client, reservationId);
+    if (reservation.status !== "reserved") {
+      await client.query("COMMIT");
+      return toReservation(reservation, link.document_id);
+    }
+    await client.query(
+      "UPDATE download_reservations SET status = 'failed' WHERE id = $1 AND status = 'reserved'",
+      [reservation.id]
+    );
+    const updated = await client.query(
+      `UPDATE download_links SET active_reservations = active_reservations - 1
+       WHERE id = $1 AND active_reservations > 0 RETURNING id`,
+      [link.id]
+    );
+    if (updated.rowCount !== 1) throw new Error("Invalid download reservation counters.");
+    await client.query("COMMIT");
+    return { ...toReservation(reservation, link.document_id), status: "failed" };
   } catch (error) {
     await client.query("ROLLBACK");
     throw error;
