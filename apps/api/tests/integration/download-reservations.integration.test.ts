@@ -3,7 +3,11 @@ import { randomUUID } from "node:crypto";
 import { test } from "node:test";
 import { pool } from "../../src/db.js";
 import { createDocument } from "../../src/services/documents.js";
-import { reserveDownload } from "../../src/services/downloads.js";
+import {
+  confirmDownloadReservation,
+  expireDownloadReservation,
+  reserveDownload
+} from "../../src/services/downloads.js";
 import { findOrCreateEditor } from "../../src/services/editors.js";
 
 function futureExpiration(): Date {
@@ -78,6 +82,82 @@ test("download reservations are transactional and idempotent", async (t) => {
       [link.publicToken]
     );
     assert.equal(count.rows[0].count, 0);
+  });
+
+  await t.test("confirms a reservation only once", async () => {
+    const link = await createLink(1);
+    const reservation = await reserveDownload(link.publicToken, "confirm-once", futureExpiration());
+    const delivered = await confirmDownloadReservation(reservation.id);
+    const replay = await confirmDownloadReservation(reservation.id);
+    assert.equal(delivered.status, "delivered");
+    assert.deepEqual(replay, delivered);
+
+    const counters = await pool.query<{ active_reservations: number; consumed_downloads: number }>(
+      `SELECT active_reservations, consumed_downloads
+       FROM download_links
+       WHERE public_token = $1`,
+      [link.publicToken]
+    );
+    assert.deepEqual(counters.rows[0], { active_reservations: 0, consumed_downloads: 1 });
+  });
+
+  await t.test("expires a reservation only once without consumption", async () => {
+    const link = await createLink(1);
+    const reservation = await reserveDownload(link.publicToken, "expire-once", futureExpiration());
+    await pool.query(
+      `UPDATE download_reservations
+       SET created_at = clock_timestamp() - INTERVAL '2 minutes',
+           expires_at = clock_timestamp() - INTERVAL '1 second'
+       WHERE id = $1`,
+      [reservation.id]
+    );
+    const expired = await expireDownloadReservation(reservation.id);
+    const replay = await expireDownloadReservation(reservation.id);
+    assert.equal(expired.status, "expired");
+    assert.deepEqual(replay, expired);
+
+    const counters = await pool.query<{ active_reservations: number; consumed_downloads: number }>(
+      `SELECT active_reservations, consumed_downloads
+       FROM download_links
+       WHERE public_token = $1`,
+      [link.publicToken]
+    );
+    assert.deepEqual(counters.rows[0], { active_reservations: 0, consumed_downloads: 0 });
+  });
+
+  await t.test("resolves concurrent confirmation and expiration once", async () => {
+    const link = await createLink(1);
+    const reservation = await reserveDownload(link.publicToken, "transition-race", futureExpiration());
+    await pool.query(
+      `UPDATE download_reservations
+       SET created_at = clock_timestamp() - INTERVAL '2 minutes',
+           expires_at = clock_timestamp() - INTERVAL '1 second'
+       WHERE id = $1`,
+      [reservation.id]
+    );
+    const transitions = await Promise.all([
+      confirmDownloadReservation(reservation.id),
+      expireDownloadReservation(reservation.id)
+    ]);
+    assert.deepEqual(transitions.map((transition) => transition.status), ["expired", "expired"]);
+
+    const counters = await pool.query<{
+      active_reservations: number;
+      consumed_downloads: number;
+      status: string;
+    }>(
+      `SELECT download_links.active_reservations, download_links.consumed_downloads,
+              download_reservations.status
+       FROM download_links
+       INNER JOIN download_reservations ON download_reservations.link_id = download_links.id
+       WHERE download_reservations.id = $1`,
+      [reservation.id]
+    );
+    assert.deepEqual(counters.rows[0], {
+      active_reservations: 0,
+      consumed_downloads: 0,
+      status: "expired"
+    });
   });
 
   await t.test("allows only one of fifty concurrent reservations for one place", async () => {
