@@ -245,7 +245,13 @@ export function createCollaborationBackend(pubsub?: ShareDB.PubSub): ShareDB {
           return;
         }
 
-        operation.m = { editorId };
+        const restoreExpectedRevision = request.agent.custom.restoreExpectedRevision;
+        operation.m = {
+          editorId,
+          ...(typeof restoreExpectedRevision === "number"
+            ? { restoreExpectedRevision }
+            : {})
+        };
         next();
       })
       .catch(next);
@@ -305,9 +311,11 @@ export function installCollaboration(app: FastifyInstance): void {
         app.log.error({ err: error }, "Redis Pub/Sub error");
       });
       backend = createCollaborationBackend(pubsub);
+      app.collaborationBackend = backend;
     });
   } else {
     backend = createCollaborationBackend();
+    app.collaborationBackend = backend;
   }
   const webSocketServer = new WebSocketServer({ noServer: true });
   const upgrade = (request: IncomingMessage, socket: Socket, head: Buffer): void => {

@@ -58,3 +58,19 @@ export function requireUuid(value: unknown, name: string): string {
 
   return value;
 }
+
+export function requireNonNegativeInteger(value: unknown, name: string): number {
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 0) {
+    throw new HttpError(400, `${name} is invalid.`);
+  }
+
+  return value;
+}
+
+export function requireNonNegativeIntegerParam(value: unknown, name: string): number {
+  if (typeof value !== "string" || !/^(0|[1-9]\d*)$/.test(value)) {
+    throw new HttpError(400, `${name} is invalid.`);
+  }
+
+  return Number(value);
+}

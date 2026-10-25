@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import ShareDB from "sharedb";
+import { type as textUnicode, type TextOp } from "ot-text-unicode";
 import { pool } from "../db.js";
 import { HttpError } from "./errors.js";
 import type { DocumentRole, DocumentSummary } from "../types/api.js";
@@ -12,6 +14,35 @@ interface DocumentRow {
   created_at: Date;
   updated_at: Date;
   role: DocumentRole;
+}
+
+interface OperationRow {
+  accepted_revision: number;
+  operation: unknown;
+}
+
+interface HistoryRow extends OperationRow {
+  base_revision: number;
+  inserted_code_points: number;
+  accepted_at: Date;
+  editor_id: string;
+  name: string;
+}
+
+export interface DocumentHistoryEntry {
+  revision: number;
+  baseRevision: number | null;
+  insertedCodePoints: number;
+  acceptedAt: string | null;
+  author: {
+    id: string;
+    displayName: string;
+  } | null;
+}
+
+export interface DocumentRevision {
+  revision: number;
+  content: string;
 }
 
 function toDocumentSummary(document: DocumentRow): DocumentSummary {
@@ -111,6 +142,203 @@ export async function getDocument(
   }
 
   return toDocumentSummary(document);
+}
+
+async function getCurrentDocumentState(documentId: string): Promise<{ content: string; revision: number }> {
+  const result = await pool.query<{ content: string; revision: number }>(
+    "SELECT content, revision FROM document_states WHERE document_id = $1",
+    [documentId]
+  );
+  const state = result.rows[0];
+  if (!state) {
+    throw new HttpError(404, "Document not found.");
+  }
+  return state;
+}
+
+async function getRevisionContent(documentId: string, revision: number): Promise<string> {
+  const operations = await pool.query<OperationRow>(
+    `SELECT accepted_revision, operation
+     FROM edit_operations
+     WHERE document_id = $1 AND accepted_revision <= $2
+     ORDER BY accepted_revision`,
+    [documentId, revision]
+  );
+
+  let content = "";
+  let expectedRevision = 1;
+  for (const operation of operations.rows) {
+    if (operation.accepted_revision !== expectedRevision || !Array.isArray(operation.operation)) {
+      throw new Error("Invalid document operation history.");
+    }
+    content = textUnicode.apply(content, operation.operation as TextOp);
+    expectedRevision++;
+  }
+
+  if (expectedRevision !== revision + 1) {
+    throw new HttpError(404, "Document revision not found.");
+  }
+
+  return content;
+}
+
+export async function getDocumentHistory(
+  editorId: string,
+  documentId: string
+): Promise<DocumentHistoryEntry[]> {
+  const document = await getDocument(editorId, documentId);
+  const result = await pool.query<HistoryRow>(
+    `SELECT edit_operations.accepted_revision, edit_operations.base_revision,
+            edit_operations.inserted_code_points, edit_operations.accepted_at,
+            editors.id AS editor_id, editors.name
+     FROM edit_operations
+     INNER JOIN editors ON editors.id = edit_operations.editor_id
+     WHERE edit_operations.document_id = $1
+     ORDER BY edit_operations.accepted_revision`,
+    [documentId]
+  );
+
+  return [
+    {
+      revision: 0,
+      baseRevision: null,
+      insertedCodePoints: 0,
+      acceptedAt: document.createdAt,
+      author: null
+    },
+    ...result.rows.map((operation) => ({
+      revision: operation.accepted_revision,
+      baseRevision: operation.base_revision,
+      insertedCodePoints: operation.inserted_code_points,
+      acceptedAt: operation.accepted_at.toISOString(),
+      author: {
+        id: operation.editor_id,
+        displayName: operation.name
+      }
+    }))
+  ];
+}
+
+export async function getDocumentRevision(
+  editorId: string,
+  documentId: string,
+  revision: number
+): Promise<DocumentRevision> {
+  await getDocument(editorId, documentId);
+  const current = await getCurrentDocumentState(documentId);
+  if (revision > current.revision) {
+    throw new HttpError(404, "Document revision not found.");
+  }
+
+  return { revision, content: await getRevisionContent(documentId, revision) };
+}
+
+function replacementOperation(current: string, target: string): TextOp {
+  const currentPoints = Array.from(current);
+  const targetPoints = Array.from(target);
+  let prefixLength = 0;
+  while (
+    prefixLength < currentPoints.length &&
+    prefixLength < targetPoints.length &&
+    currentPoints[prefixLength] === targetPoints[prefixLength]
+  ) {
+    prefixLength++;
+  }
+
+  let suffixLength = 0;
+  while (
+    suffixLength < currentPoints.length - prefixLength &&
+    suffixLength < targetPoints.length - prefixLength &&
+    currentPoints[currentPoints.length - suffixLength - 1] ===
+      targetPoints[targetPoints.length - suffixLength - 1]
+  ) {
+    suffixLength++;
+  }
+
+  const operation: TextOp = [];
+  if (prefixLength > 0) {
+    operation.push(prefixLength);
+  }
+  const deleted = currentPoints.slice(prefixLength, currentPoints.length - suffixLength).join("");
+  if (deleted) {
+    operation.push({ d: deleted });
+  }
+  const inserted = targetPoints.slice(prefixLength, targetPoints.length - suffixLength).join("");
+  if (inserted) {
+    operation.push(inserted);
+  }
+  return operation;
+}
+
+function submitRestoration(
+  backend: ShareDB,
+  editorId: string,
+  documentId: string,
+  revision: number,
+  operation: TextOp
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    backend.submit(
+      {
+        protocol: "1.2",
+        custom: { editorId, restoreExpectedRevision: revision }
+      } as never,
+      "documents",
+      documentId,
+      { src: `restore-${randomUUID()}`, seq: 0, v: revision, op: operation },
+      null,
+      (error) => error ? reject(error) : resolve()
+    );
+  });
+}
+
+export async function restoreDocument(
+  editorId: string,
+  documentId: string,
+  targetRevision: number,
+  expectedRevision: number,
+  backend: ShareDB
+): Promise<DocumentRevision> {
+  const document = await getDocument(editorId, documentId);
+  if (document.role !== "owner") {
+    throw new HttpError(403, "Only the document owner can restore revisions.");
+  }
+
+  const current = await getCurrentDocumentState(documentId);
+  if (targetRevision > current.revision) {
+    throw new HttpError(404, "Document revision not found.");
+  }
+  if (expectedRevision !== current.revision) {
+    throw new HttpError(409, "Document changed before restoration.");
+  }
+
+  const targetContent = await getRevisionContent(documentId, targetRevision);
+  if (targetContent === current.content) {
+    throw new HttpError(409, "Document already matches this revision.");
+  }
+
+  try {
+    await submitRestoration(
+      backend,
+      editorId,
+      documentId,
+      expectedRevision,
+      replacementOperation(current.content, targetContent)
+    );
+  } catch (error) {
+    const code = typeof error === "object" && error !== null && "code" in error
+      ? error.code
+      : undefined;
+    if (code === "RESTORE_CONFLICT") {
+      throw new HttpError(409, "Document changed before restoration.");
+    }
+    if (code === "CREDIT_EXHAUSTED") {
+      throw new HttpError(409, "Daily Unicode code point credit exhausted.");
+    }
+    throw error;
+  }
+
+  return { revision: expectedRevision + 1, content: targetContent };
 }
 
 export async function addDocumentEditor(

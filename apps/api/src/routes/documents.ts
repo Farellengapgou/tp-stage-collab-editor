@@ -3,10 +3,21 @@ import {
   addDocumentEditor,
   createDocument,
   getDocument,
-  listDocuments
+  getDocumentHistory,
+  getDocumentRevision,
+  listDocuments,
+  restoreDocument
 } from "../services/documents.js";
 import { requireEditor } from "./auth.js";
-import { bodyRecord, optionalText, requiredText, requireUuid } from "./validation.js";
+import {
+  bodyRecord,
+  optionalText,
+  requiredText,
+  requireNonNegativeInteger,
+  requireNonNegativeIntegerParam,
+  requireUuid
+} from "./validation.js";
+import { HttpError } from "../services/errors.js";
 
 export function registerDocumentRoutes(app: FastifyInstance): void {
   app.post("/documents", async (request, reply) => {
@@ -31,6 +42,45 @@ export function registerDocumentRoutes(app: FastifyInstance): void {
     const params = request.params as { id?: unknown };
     const documentId = requireUuid(params.id, "document id");
     const document = await getDocument(editor.id, documentId);
+    return { document };
+  });
+
+  app.get("/documents/:id/history", async (request) => {
+    const editor = await requireEditor(request);
+    const params = request.params as { id?: unknown };
+    const documentId = requireUuid(params.id, "document id");
+    const history = await getDocumentHistory(editor.id, documentId);
+    return { history };
+  });
+
+  app.get("/documents/:id/history/:revision", async (request) => {
+    const editor = await requireEditor(request);
+    const params = request.params as { id?: unknown; revision?: unknown };
+    const documentId = requireUuid(params.id, "document id");
+    const revision = requireNonNegativeIntegerParam(params.revision, "revision");
+    const document = await getDocumentRevision(editor.id, documentId, revision);
+    return { document };
+  });
+
+  app.post("/documents/:id/history/:revision/restore", async (request) => {
+    const editor = await requireEditor(request);
+    const params = request.params as { id?: unknown; revision?: unknown };
+    const documentId = requireUuid(params.id, "document id");
+    const revision = requireNonNegativeIntegerParam(params.revision, "revision");
+    const body = bodyRecord(request.body, ["currentRevision"]);
+    const currentRevision = requireNonNegativeInteger(body.currentRevision, "currentRevision");
+    const backend = app.collaborationBackend;
+    if (!backend) {
+      throw new HttpError(503, "Collaboration service unavailable.");
+    }
+
+    const document = await restoreDocument(
+      editor.id,
+      documentId,
+      revision,
+      currentRevision,
+      backend
+    );
     return { document };
   });
 

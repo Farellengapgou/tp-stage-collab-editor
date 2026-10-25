@@ -1,3 +1,4 @@
+// centralise la connection entre notre api et Node.js 
 import { Pool } from "pg";
 
 const databaseUrl = process.env.DATABASE_URL;

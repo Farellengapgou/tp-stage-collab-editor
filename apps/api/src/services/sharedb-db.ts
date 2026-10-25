@@ -1,3 +1,5 @@
+//ce fichier permet à sharedb d'utiliser postgreSQL pour conserver les modifications collaboratives , tout en appliquat la limitations sur les credits d'écritures comptés ici en caractère unicode 
+
 import { randomUUID } from "node:crypto";
 import ShareDB from "sharedb";
 import { pool } from "../db.js";
@@ -5,27 +7,35 @@ import { pool } from "../db.js";
 const collectionName = "documents";
 const textType = "text-unicode";
 
-interface DocumentOperation {
+interface DocumentOperation { // comment est representé une modification 
   v: number;
   src?: string;
   seq?: number;
   op?: unknown[];
-  m?: { editorId?: string };
+  m?: { editorId?: string; restoreExpectedRevision?: number };
 }
 
+// calcul des credits consommés 
 function insertedCodePoints(operation: unknown[]): number {
   return operation.reduce<number>(
     (total, component) => total + (typeof component === "string" ? Array.from(component).length : 0),
     0
   );
 }
-
+// signaler un quota epuisé 
 function creditExceededError(): Error {
   return Object.assign(new Error("Daily Unicode code point credit exhausted."), {
     code: "CREDIT_EXHAUSTED"
   });
 }
 
+function restoreConflictError(): Error {
+  return Object.assign(new Error("Document changed before restoration could be applied."), {
+    code: "RESTORE_CONFLICT"
+  });
+}
+
+// Nous créons notre adaptateur postgreSQL (implemetation du stockage attendu par sharedb )
 export class DocumentShareDb extends ShareDB.DB {
   commit(
     collection: string,
@@ -66,7 +76,14 @@ export class DocumentShareDb extends ShareDB.DB {
       const current = await client.query<{ revision: number }>(
         "SELECT revision FROM document_states WHERE document_id = $1 FOR UPDATE",
         [documentId]
-      );
+      ); // verrouille la ligne du document pendant la transaction : c'est la base de notre protection contre les écirtures concurrentes 
+
+      if (
+        operation.m.restoreExpectedRevision !== undefined &&
+        operation.m.restoreExpectedRevision !== current.rows[0]?.revision
+      ) {
+        throw restoreConflictError();
+      }
 
       if (current.rowCount !== 1 || snapshot.v !== current.rows[0].revision + 1) {
         await client.query("ROLLBACK");
@@ -137,7 +154,7 @@ export class DocumentShareDb extends ShareDB.DB {
     }
   }
 
-  getSnapshot(
+  getSnapshot( // permet de recuperer le document actuel 
     collection: string,
     documentId: string,
     _fields: unknown,
@@ -168,7 +185,7 @@ export class DocumentShareDb extends ShareDB.DB {
     })();
   }
 
-  getOps(
+  getOps( // permet de recuperer l'historique des opérations 
     collection: string,
     documentId: string,
     from: number | null,

@@ -4,8 +4,15 @@ import { registerEditorRoutes } from "./routes/editors.js";
 import { HttpError } from "./services/errors.js";
 import { installCollaboration } from "./services/collaboration.js";
 
+declare module "fastify" {
+  interface FastifyInstance {
+    collaborationBackend: import("sharedb") | null;
+  }
+}
+
 export function buildApp() {
   const app = Fastify({ logger: true });
+  app.decorate("collaborationBackend", null);
 
   app.get("/health", async () => {
     return { status: "ok" };
