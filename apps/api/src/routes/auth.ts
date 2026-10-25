@@ -10,7 +10,13 @@ export function readCookie(
   request: FastifyRequest,
   name: string
 ): string | null {
-  const header = request.headers.cookie;
+  return readCookieHeader(request.headers.cookie, name);
+}
+
+export function readCookieHeader(
+  header: string | undefined,
+  name: string
+): string | null {
   if (!header) {
     return null;
   }

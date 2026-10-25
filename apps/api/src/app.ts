@@ -2,6 +2,7 @@ import Fastify from "fastify";
 import { registerDocumentRoutes } from "./routes/documents.js";
 import { registerEditorRoutes } from "./routes/editors.js";
 import { HttpError } from "./services/errors.js";
+import { installCollaboration } from "./services/collaboration.js";
 
 export function buildApp() {
   const app = Fastify({ logger: true });
@@ -12,6 +13,7 @@ export function buildApp() {
 
   registerEditorRoutes(app);
   registerDocumentRoutes(app);
+  installCollaboration(app);
 
   app.setErrorHandler((error, _request, reply) => {
     if (error instanceof HttpError) {
