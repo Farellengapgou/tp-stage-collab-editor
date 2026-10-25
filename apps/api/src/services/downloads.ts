@@ -75,6 +75,8 @@ export async function reserveDownload(
       throw new HttpError(410, "Download link is inactive.");
     }
 
+    link.active_reservations -= await expireLinkReservations(client, link);
+
     const existingResult = await client.query<ReservationRow>(
       `SELECT id, reserved_revision, status, expires_at
        FROM download_reservations
@@ -137,6 +139,45 @@ export async function reserveDownload(
   } finally {
     client.release();
   }
+}
+
+async function expireLinkReservations(
+  client: PoolClient,
+  link: DownloadLinkRow
+): Promise<number> {
+  const now = await currentTimestamp(client);
+  const expiredResult = await client.query<{ id: string }>(
+    `SELECT id
+     FROM download_reservations
+     WHERE link_id = $1
+       AND status = 'reserved'
+       AND expires_at <= $2
+     FOR UPDATE`,
+    [link.id, now]
+  );
+  const reservationIds = expiredResult.rows.map((reservation) => reservation.id);
+  if (reservationIds.length === 0) {
+    return 0;
+  }
+
+  const expired = await client.query(
+    `UPDATE download_reservations
+     SET status = 'expired'
+     WHERE id = ANY($1::uuid[]) AND status = 'reserved'`,
+    [reservationIds]
+  );
+  const expiredCount = expired.rowCount ?? 0;
+  const updatedLink = await client.query(
+    `UPDATE download_links
+     SET active_reservations = active_reservations - $2
+     WHERE id = $1 AND active_reservations >= $2
+     RETURNING id`,
+    [link.id, expiredCount]
+  );
+  if (updatedLink.rowCount !== 1) {
+    throw new Error("Invalid download reservation counters.");
+  }
+  return expiredCount;
 }
 
 async function lockReservation(
