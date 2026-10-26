@@ -159,4 +159,4 @@ Le script `scripts/deploy-frontend.sh` construit le frontend, synchronise son r�
 
 ## Documentation de validation
 
-Le rapport de tests et l’analyse des preuves disponibles sont dans [documents/rapport-de-tests.md](documents/rapport-de-tests.md). La configuration de déploiement est décrite dans [documents/deploiement-aws.md](documents/deploiement-aws.md).
+Le rapport de tests et l’analyse des preuves disponibles sont dans [documents/Rapport_de_Tests.md](documents/Rapport_de_Tests.md). La configuration de déploiement est décrite dans [documents/Guide_Deploiement.md](documents/Guide_Deploiement.md).

@@ -116,7 +116,7 @@ Les migrations sont idempotentes là où le schéma l’exige, mais le suivi par
 | Migration EB | `.platform/hooks/predeploy/01_migrate.sh` | Lance les migrations avant le démarrage du processus web. |
 | Déploiement frontend | `scripts/deploy-frontend.sh` | Build Vite, synchronisation S3, en-têtes de cache et invalidation CloudFront. |
 | Réécriture API CloudFront | `scripts/cloudfront-api-rewrite.js` | Retire `/api` avant transmission à l’origine API. |
-| Paramètres détaillés | `documents/deploiement-aws.md` | Variables, TLS, S3, Redis, archive EB et points de vérification. |
+| Paramètres détaillés | `documents/Guide_Deploiement.md` | Variables, TLS, S3, Redis, archive EB et points de vérification. |
 
 Le backend utilise le rôle IAM de l’instance via le SDK AWS. Aucun credential AWS n’est lu depuis le frontend ou codé dans les fichiers applicatifs.
 
