@@ -1,9 +1,21 @@
 ALTER TABLE documents
   ADD COLUMN IF NOT EXISTS description TEXT NOT NULL DEFAULT '',
   ADD COLUMN IF NOT EXISTS published_at TIMESTAMPTZ,
-  ADD COLUMN IF NOT EXISTS current_revision INTEGER NOT NULL DEFAULT 0,
-  ADD CONSTRAINT documents_current_revision_non_negative
-    CHECK (current_revision >= 0);
+  ADD COLUMN IF NOT EXISTS current_revision INTEGER NOT NULL DEFAULT 0;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conname = 'documents_current_revision_non_negative'
+      AND conrelid = 'documents'::regclass
+  ) THEN
+    ALTER TABLE documents
+      ADD CONSTRAINT documents_current_revision_non_negative
+      CHECK (current_revision >= 0);
+  END IF;
+END;
+$$;
 
 CREATE OR REPLACE FUNCTION set_documents_updated_at()
 RETURNS TRIGGER

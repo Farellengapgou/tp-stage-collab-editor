@@ -291,9 +291,17 @@ export async function createRedisPubSub(
   redisUrl: string,
   onError: (error: Error) => void
 ): Promise<ShareDB.PubSub> {
+  const protocol = new URL(redisUrl).protocol;
+  if (protocol !== "redis:" && protocol !== "rediss:") {
+    throw new Error("REDIS_URL must use redis:// or rediss://.");
+  }
+
   const client = createClient({
     url: redisUrl,
-    socket: { reconnectStrategy: false }
+    socket: {
+      reconnectStrategy: false,
+      ...(protocol === "rediss:" ? { tls: true, rejectUnauthorized: true } : {})
+    }
   });
   const observer = client.duplicate();
   client.on("error", onError);
