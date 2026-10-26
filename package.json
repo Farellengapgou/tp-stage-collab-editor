@@ -9,10 +9,14 @@
     "dev:api": "npm run dev -w @collab/api",
     "build": "npm run build --workspaces --if-present",
     "test": "npm run test --workspaces --if-present",
+    "test:e2e": "playwright test",
     "migrate": "npm run migrate -w @collab/api",
     "start": "npm run start -w @collab/api"
   },
   "engines": {
     "node": ">=20 <23"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.64.1"
   }
 }

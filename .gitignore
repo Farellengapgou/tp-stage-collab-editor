@@ -21,3 +21,5 @@ AGENTS.md
 *.p12
 *.pfx
 credentials.json
+playwright-report/
+test-results/

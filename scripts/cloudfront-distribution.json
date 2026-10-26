@@ -1,0 +1,64 @@
+{
+  "CallerReference": "collab-editor-frontend-20261026",
+  "Comment": "collab-editor-frontend",
+  "Enabled": true,
+  "DefaultRootObject": "index.html",
+  "PriceClass": "PriceClass_100",
+  "Origins": {
+    "Quantity": 2,
+    "Items": [
+      {
+        "Id": "frontend-s3",
+        "DomainName": "collab-editor-frontend-455592559083.s3.eu-north-1.amazonaws.com",
+        "OriginAccessControlId": "EIIBBZ5D3UAP5",
+        "S3OriginConfig": { "OriginAccessIdentity": "" }
+      },
+      {
+        "Id": "backend-eb",
+        "DomainName": "collab-editor-env-1.eba-68mxpaqg.eu-north-1.elasticbeanstalk.com",
+        "CustomOriginConfig": {
+          "HTTPPort": 80,
+          "HTTPSPort": 443,
+          "OriginProtocolPolicy": "http-only",
+          "OriginSslProtocols": { "Quantity": 1, "Items": ["TLSv1.2"] }
+        }
+      }
+    ]
+  },
+  "DefaultCacheBehavior": {
+    "TargetOriginId": "frontend-s3",
+    "ViewerProtocolPolicy": "redirect-to-https",
+    "Compress": true,
+    "AllowedMethods": { "Quantity": 3, "Items": ["GET", "HEAD", "OPTIONS"], "CachedMethods": { "Quantity": 2, "Items": ["GET", "HEAD"] } },
+    "CachePolicyId": "658327ea-f89d-4fab-a63d-7e88639e58f6"
+  },
+  "CacheBehaviors": {
+    "Quantity": 2,
+    "Items": [
+      {
+        "PathPattern": "/api/*",
+        "TargetOriginId": "backend-eb",
+        "ViewerProtocolPolicy": "https-only",
+        "Compress": true,
+        "AllowedMethods": { "Quantity": 7, "Items": ["GET", "HEAD", "OPTIONS", "PUT", "PATCH", "POST", "DELETE"], "CachedMethods": { "Quantity": 2, "Items": ["GET", "HEAD"] } },
+        "CachePolicyId": "4135ea2d-6df8-44a3-9df3-4b5a84be39ad",
+        "OriginRequestPolicyId": "b689b0a8-53d0-40ab-baf2-68738e2966ac",
+        "FunctionAssociations": { "Quantity": 1, "Items": [{ "FunctionARN": "arn:aws:cloudfront::455592559083:function/collab-editor-api-rewrite", "EventType": "viewer-request" }] }
+      },
+      {
+        "PathPattern": "/ws",
+        "TargetOriginId": "backend-eb",
+        "ViewerProtocolPolicy": "https-only",
+        "Compress": false,
+        "AllowedMethods": { "Quantity": 7, "Items": ["GET", "HEAD", "OPTIONS", "PUT", "PATCH", "POST", "DELETE"], "CachedMethods": { "Quantity": 2, "Items": ["GET", "HEAD"] } },
+        "CachePolicyId": "4135ea2d-6df8-44a3-9df3-4b5a84be39ad",
+        "OriginRequestPolicyId": "b689b0a8-53d0-40ab-baf2-68738e2966ac"
+      }
+    ]
+  },
+  "CustomErrorResponses": { "Quantity": 0 },
+  "ViewerCertificate": { "CloudFrontDefaultCertificate": true, "MinimumProtocolVersion": "TLSv1.2_2021" },
+  "Restrictions": { "GeoRestriction": { "RestrictionType": "none", "Quantity": 0 } },
+  "HttpVersion": "http2and3",
+  "IsIPV6Enabled": true
+}
