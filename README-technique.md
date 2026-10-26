@@ -116,7 +116,7 @@ Les migrations sont idempotentes là où le schéma l’exige, mais le suivi par
 | Migration EB | `.platform/hooks/predeploy/01_migrate.sh` | Lance les migrations avant le démarrage du processus web. |
 | Déploiement frontend | `scripts/deploy-frontend.sh` | Build Vite, synchronisation S3, en-têtes de cache et invalidation CloudFront. |
 | Réécriture API CloudFront | `scripts/cloudfront-api-rewrite.js` | Retire `/api` avant transmission à l’origine API. |
-| Paramètres détaillés | `docs/deploiement-aws.md` | Variables, TLS, S3, Redis, archive EB et points de vérification. |
+| Paramètres détaillés | `documents/deploiement-aws.md` | Variables, TLS, S3, Redis, archive EB et points de vérification. |
 
 Le backend utilise le rôle IAM de l’instance via le SDK AWS. Aucun credential AWS n’est lu depuis le frontend ou codé dans les fichiers applicatifs.
 
@@ -137,5 +137,3 @@ Les tests d’intégration nécessitent une base PostgreSQL dédiée. Ils ne doi
 - L’envoi effectif d’un e-mail au dernier téléchargement n’est pas encore relié à SES/SMTP.
 - Les tables de blocage et d’outbox existent, mais il n’y a pas encore de politique de détection d’acharnement ni d’écran de supervision de l’association.
 - La capacité complète de 15 000 visiteurs et 300 rédacteurs n’est pas démontrée par un test de charge.
-
-Ces points sont des limites du projet actuel et ne doivent pas être présentés comme terminés.
