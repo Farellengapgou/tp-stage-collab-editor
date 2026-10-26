@@ -5,6 +5,7 @@ import {
   getDocument,
   getDocumentHistory,
   getDocumentRevision,
+  listDocumentEditors,
   listDocuments,
   restoreDocument
 } from "../services/documents.js";
@@ -51,6 +52,14 @@ export function registerDocumentRoutes(app: FastifyInstance): void {
     const documentId = requireUuid(params.id, "document id");
     const history = await getDocumentHistory(editor.id, documentId);
     return { history };
+  });
+
+  app.get("/documents/:id/editors", async (request) => {
+    const editor = await requireEditor(request);
+    const params = request.params as { id?: unknown };
+    const documentId = requireUuid(params.id, "document id");
+    const editors = await listDocumentEditors(editor.id, documentId);
+    return { editors };
   });
 
   app.get("/documents/:id/history/:revision", async (request) => {

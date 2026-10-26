@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import {
   createSession,
+  findEditorByEmail,
   findOrCreateEditor,
   isValidEmail,
   normalizeEmail
@@ -29,6 +30,20 @@ export function registerEditorRoutes(app: FastifyInstance): void {
 
   app.get("/editors/me", async (request) => {
     const editor = await requireEditor(request);
+    return { editor };
+  });
+
+  app.get("/editors/lookup", async (request) => {
+    await requireEditor(request);
+    const query = request.query as { email?: unknown };
+    const email = normalizeEmail(typeof query.email === "string" ? query.email : "");
+    if (!isValidEmail(email)) {
+      throw new HttpError(400, "email is invalid.");
+    }
+    const editor = await findEditorByEmail(email);
+    if (!editor) {
+      throw new HttpError(404, "Editor not found.");
+    }
     return { editor };
   });
 }
